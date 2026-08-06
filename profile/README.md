@@ -20,7 +20,10 @@ file you already have.
 | [**MSD**](https://github.com/Anastylosis/MSD) | **The material.** Resolves album, folder, and creator URLs into files and fetches them concurrently, with resume. |
 
 Self-hosted, offline-capable, and built to run against libraries you own.
-[Stash](https://stashapp.cc) is the media manager these integrate with today —
-the current target, not the boundary.
+
+[Stash](https://stashapp.cc) is the media manager these integrate with today.
+[COVE](https://github.com/yourcove/cove) support is planned, and more players
+after it. The pieces these tools recover belong to your library — not to
+whichever thing happens to be cataloguing it.
 
 Shared CI/CD lives in [`.github`](https://github.com/Anastylosis/.github).
