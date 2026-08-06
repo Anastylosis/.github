@@ -1,0 +1,49 @@
+name: Self-check
+
+# A broken reusable workflow breaks five repos at once, and it breaks them at
+# the worst moment — a caller only finds out when it tries to run. actionlint
+# parses the workflow, type-checks every ${{ }} expression against the event
+# payload, and shellchecks each `run:` block, which is most of what a bad edit
+# here would look like.
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - name: Run actionlint
+        # Pinned like everything else. shellcheck and pyflakes are present on
+        # the runner image, so actionlint picks them up for `run:` blocks
+        # without extra setup.
+        run: |
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash) 1.7.7
+          ./actionlint -color
+
+      - name: Verify caller examples still parse
+        # docs/callers/*.yml are not workflows in this repo (they belong in the
+        # consuming repos), so actionlint above does not see them. Parse them
+        # here so a stale example cannot rot silently.
+        run: |
+          python3 - <<'PY'
+          import glob, sys, yaml
+          bad = 0
+          for path in sorted(glob.glob("docs/callers/*.yml")):
+              try:
+                  yaml.safe_load(open(path))
+                  print(f"ok   {path}")
+              except Exception as exc:
+                  print(f"FAIL {path}: {exc}")
+                  bad = 1
+          sys.exit(bad)
+          PY

@@ -1,0 +1,24 @@
+version: 2
+
+updates:
+  # The whole point of centralising: one PR per action bump instead of five.
+  # Grouped so a Docker or Actions-org bump arrives as a single reviewable
+  # change rather than six separate ones.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions-org:
+        patterns:
+          - 'actions/*'
+      docker:
+        patterns:
+          - 'docker/*'
+      security-tooling:
+        patterns:
+          - 'aquasecurity/*'
+          - 'github/codeql-action*'
+          - 'golangci/*'
+    commit-message:
+      prefix: 'ci'

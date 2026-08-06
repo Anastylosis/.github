@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: Anastylosis/.github/.github/workflows/go-ci.yml@v1
+    permissions:
+      contents: read
+      checks: write
+    secrets: inherit
+    with:
+      binary-name: moansubs
+      main-package: ./cmd/moansubs
+      postgres-image: postgres:16-alpine
+      # -p 1: internal/store and internal/api both TRUNCATE the shared
+      # Postgres tables in test setup, so their test binaries must run one at
+      # a time, not in parallel (see the Makefile).
+      test-flags: '-p 1 -race -count=1'
+      check-dockerfile-go-version: true
+
+# NOTE: the shared workflow exports DATABASE_URL with generic ci/ci/ci_test
+# credentials rather than moansubs/moansubs/moansubs_test. internal/store's
+# tests read DATABASE_URL and skip when unset, so nothing needs to change —
+# but do not hardcode the old credentials anywhere new.
+#
+# TODO once internal/subs lands: add fuzz-targets for the SRT/VTT parser.

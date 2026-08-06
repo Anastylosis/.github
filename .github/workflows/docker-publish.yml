@@ -1,0 +1,233 @@
+name: Docker publish (reusable)
+
+# One workflow for both image flavours, because a repo's docker.yml (dev
+# images) and the docker job at the end of its release.yml differ only in
+# three things: which tags metadata-action computes, whether we log in, and
+# whether we push. Everything else — QEMU, buildx, build-args, attestation,
+# Trivy — was already identical, and the per-repo copies had drifted only in
+# an action patch version and a comment.
+#
+# mode: dev      → branch + PR + sha- tags, no push on PRs
+# mode: release  → semver + latest tags from a v* tag, always pushes
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: '"dev" or "release".'
+        required: true
+        type: string
+      platforms:
+        required: false
+        type: string
+        default: 'linux/amd64,linux/arm64'
+      context:
+        required: false
+        type: string
+        default: '.'
+      dockerfile:
+        required: false
+        type: string
+        default: './Dockerfile'
+      go-version-build-arg:
+        description: >-
+          Mirror go.mod's `go` directive into the build as GO_VERSION, so the
+          builder image always matches the toolchain go.mod declares. Read
+          inline rather than via each repo's scripts/go-version.sh — that
+          script stays for local use, but the pipeline no longer depends on
+          every repo shipping an identical copy of it. Turn off for non-Go
+          images.
+        required: false
+        type: boolean
+        default: true
+      go-mod-path:
+        required: false
+        type: string
+        default: 'go.mod'
+      version-build-args:
+        description: >-
+          Pass VERSION/COMMIT/DATE build-args. Turn off for images whose
+          Dockerfile does not declare them — Docker only warns about unknown
+          build-args, but the warning is noise.
+        required: false
+        type: boolean
+        default: true
+      trivy:
+        description: 'Run an informational HIGH/CRITICAL scan on the pushed image.'
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and push image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      # Needed for actions/attest-build-provenance: OIDC token + attestation
+      # write. Attestations are stored on the workflow run (verifiable via
+      # `gh attestation verify`), NOT embedded in the registry image index —
+      # that keeps the manifest list clean of "unknown/unknown" entries.
+      id-token: write
+      attestations: write
+    env:
+      REGISTRY: ghcr.io
+      IMAGE_NAME: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4.2.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4.2.0
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Two steps rather than one with a conditional `tags:` value. metadata-
+      # action's patterns contain `{{version}}`, and putting that inside a
+      # ${{ }} expression puts a literal `}}` inside the expression — exactly
+      # the terminator the workflow parser is scanning for. Splitting the step
+      # keeps the braces out of any expression.
+      - name: Compute image metadata (dev)
+        id: meta-dev
+        if: inputs.mode != 'release'
+        uses: docker/metadata-action@v6.2.0
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix=sha-,format=short
+
+      - name: Compute image metadata (release)
+        id: meta-release
+        if: inputs.mode == 'release'
+        uses: docker/metadata-action@v6.2.0
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest
+
+      - name: Select image metadata
+        id: meta
+        env:
+          TAGS: ${{ inputs.mode == 'release' && steps.meta-release.outputs.tags || steps.meta-dev.outputs.tags }}
+          LABELS: ${{ inputs.mode == 'release' && steps.meta-release.outputs.labels || steps.meta-dev.outputs.labels }}
+        run: |
+          {
+            echo "tags<<META_EOF"; printf '%s\n' "$TAGS"; echo "META_EOF"
+            echo "labels<<META_EOF"; printf '%s\n' "$LABELS"; echo "META_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      # Build-args are assembled here rather than with conditional expressions
+      # in the `with:` block, so an omitted arg produces no line at all —
+      # build-push-action's parser is happier with a short list than with
+      # blank entries.
+      - name: Resolve build args
+        id: args
+        env:
+          MODE: ${{ inputs.mode }}
+          GO_MOD_PATH: ${{ inputs.go-mod-path }}
+          WANT_GO_ARG: ${{ inputs.go-version-build-arg }}
+          WANT_VERSION_ARGS: ${{ inputs.version-build-args }}
+        run: |
+          if [ "$MODE" = "release" ]; then
+            VERSION="${GITHUB_REF#refs/tags/}"
+          elif [ "$GITHUB_REF" = "refs/heads/main" ] || [ "$GITHUB_REF" = "refs/heads/master" ]; then
+            VERSION="main"
+          else
+            VERSION="${GITHUB_REF##*/}"
+          fi
+
+          args=""
+          if [ "$WANT_GO_ARG" = "true" ]; then
+            # go.mod's `go` directive looks like `go 1.26.5`. Same awk as each
+            # repo's scripts/go-version.sh, inlined so this workflow does not
+            # require that script to exist.
+            go_version=$(awk '/^go [0-9]+\.[0-9]+(\.[0-9]+)?$/ { print $2; exit }' "$GO_MOD_PATH")
+            if [ -z "$go_version" ]; then
+              echo "::error::could not find a 'go X.Y[.Z]' directive in $GO_MOD_PATH"
+              exit 1
+            fi
+            args="${args}GO_VERSION=${go_version}"$'\n'
+          fi
+          if [ "$WANT_VERSION_ARGS" = "true" ]; then
+            args="${args}VERSION=${VERSION}"$'\n'
+            args="${args}COMMIT=${GITHUB_SHA::8}"$'\n'
+            args="${args}DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)"$'\n'
+          fi
+
+          {
+            echo "build-args<<ARGS_EOF"
+            printf '%s' "$args"
+            echo "ARGS_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v7.3.0
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.dockerfile }}
+          platforms: ${{ inputs.platforms }}
+          push: ${{ github.event_name != 'pull_request' }}
+          # Intentionally disabled: provenance: true bakes attestation
+          # manifests into the image index as `unknown/unknown` entries, which
+          # clutters GHCR's UI. SLSA provenance is generated below via
+          # actions/attest-build-provenance and stored on the workflow run
+          # instead, verifiable via `gh attestation verify`.
+          provenance: false
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: ${{ steps.args.outputs.build-args }}
+
+      - name: Attest build provenance
+        # SLSA v1 attestation linked to the pushed image digest. Stored on the
+        # workflow run, not in the registry — keeps the multi-arch manifest
+        # list free of `unknown/unknown` entries. Verify with:
+        #   gh attestation verify oci://ghcr.io/<owner>/<repo>@<digest> --owner <owner>
+        if: github.event_name != 'pull_request'
+        uses: actions/attest-build-provenance@v4.1.1
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: false
+
+      - name: Lowercase image repo for Trivy
+        # OCI references must be all-lowercase. ${{ github.repository }} can
+        # contain uppercase (e.g. "Owner/Repo"), and GitHub expressions have no
+        # case-conversion function — so we bounce through bash to produce a
+        # lowercase ref Trivy can parse.
+        if: inputs.trivy && github.event_name != 'pull_request'
+        run: echo "IMAGE_REPO_LC=${REGISTRY}/${IMAGE_NAME,,}" >> "$GITHUB_ENV"
+
+      - name: Trivy scan (informational)
+        # Informational only (`exit-code: '0'`) for the same reason govulncheck
+        # is: a "fail on any finding" gate would force base-image bumps on
+        # every new CVE. Findings show up in the log; bump deliberately.
+        if: inputs.trivy && github.event_name != 'pull_request'
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE_REPO_LC }}@${{ steps.build.outputs.digest }}
+          severity: HIGH,CRITICAL
+          format: table
+          exit-code: '0'
+          ignore-unfixed: true

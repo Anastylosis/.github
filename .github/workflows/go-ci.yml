@@ -1,0 +1,466 @@
+name: Go CI (reusable)
+
+# Reusable CI for the Anastylosis Go projects. Factored out of the most
+# developed of the per-repo pipelines rather than assembled from scratch:
+# every non-obvious step here earned its comment by breaking something once.
+# Repos adopt upward into this; nothing was averaged down to a lowest common
+# denominator.
+#
+# Actions are pinned to exact versions, not moving major tags. A major tag
+# like @v7 advances whenever v7.x ships, so an unrelated commit can turn CI
+# red — which is exactly how `version: latest` silently moved one repo's
+# linter from v1 to v2. Centralising the pins here means one Dependabot PR
+# instead of one per repo, so exact pinning finally costs nothing.
+
+on:
+  workflow_call:
+    inputs:
+      binary-name:
+        description: 'Binary name, used for cross-build output.'
+        required: true
+        type: string
+      main-package:
+        description: 'Package to build (e.g. "." or "./cmd/<name>").'
+        required: false
+        type: string
+        default: '.'
+
+      # --- Test job -----------------------------------------------------
+      test-flags:
+        description: >-
+          Flags passed to the test binary. A repo whose packages share one
+          database needs `-p 1` — if two test binaries both TRUNCATE the same
+          tables in setup, they cannot run in parallel.
+        required: false
+        type: string
+        default: '-race -count=1'
+      coverpkg:
+        description: >-
+          Add `-coverpkg=./...` and compact the resulting profile. Attributes
+          a statement to whichever test executed it rather than only to its
+          own package's tests. Where one package's tests drive code across the
+          whole tree — a registry test exercising every registered handler —
+          thousands of genuinely exercised statements otherwise read as
+          uncovered (measured: 80.6% vs 83.8%).
+        required: false
+        type: boolean
+        default: false
+      postgres-image:
+        description: >-
+          Start a Postgres container for the test job and export DATABASE_URL.
+          Empty (the default) means no database. A step rather than a
+          `services:` block because reusable workflows cannot attach service
+          containers conditionally.
+        required: false
+        type: string
+        default: ''
+      codecov:
+        description: 'Upload coverage and JUnit results to Codecov.'
+        required: false
+        type: boolean
+        default: true
+
+      # --- Fuzz ---------------------------------------------------------
+      fuzz-targets:
+        description: >-
+          Newline-separated "<package> <FuzzTarget>" pairs, e.g.
+          "./match/... FuzzNormalize". Each runs separately because -fuzz
+          accepts a single target per invocation. Empty disables fuzzing.
+        required: false
+        type: string
+        default: ''
+      fuzz-time:
+        description: >-
+          Per-target fuzz budget. 10s is enough to re-run the seed corpus plus
+          a short random walk; every regression these have caught so far
+          reproduced from a seed, so a failure is deterministic, not luck.
+        required: false
+        type: string
+        default: '10s'
+
+      # --- Optional jobs ------------------------------------------------
+      platform-tests:
+        description: >-
+          Also *run* the suite on windows-latest and macos-latest. cross-build
+          only compiles those targets, so without this no Windows or macOS
+          code path is ever executed. Not hypothetical: a Windows build tag can
+          make a process lock a no-op, and atomic-write helpers rely on
+          rename-over-existing semantics that differ there.
+        required: false
+        type: boolean
+        default: false
+      offline-isolation:
+        description: >-
+          Re-run the unit suite in a network namespace with only loopback up.
+          Catches unit tests that quietly reach a live site and therefore pass
+          while the code underneath them is broken. This has happened: a test
+          graded live markup instead of its own fixture and failed only on a
+          network-less runner.
+        required: false
+        type: boolean
+        default: false
+      vet-integration-tag:
+        description: >-
+          Also run `go vet -tags=integration`. Static only — it compiles the
+          //go:build integration files without executing them, so no network
+          traffic happens on shared runners. Without it, broken integration
+          test code stays invisible until someone runs `make smoke` locally.
+        required: false
+        type: boolean
+        default: false
+      check-aur-srcinfo:
+        description: >-
+          Verify packaging/aur/.SRCINFO matches its PKGBUILD. Catches the drift
+          class where the two disagree on a field — license, say — and only AUR
+          notices.
+        required: false
+        type: boolean
+        default: false
+      check-dockerfile-go-version:
+        description: >-
+          Verify the Dockerfile's `ARG GO_VERSION` default matches go.mod. CI
+          passes GO_VERSION dynamically; the ARG default is the fallback for a
+          naive local `docker build .`, and the two drift silently.
+        required: false
+        type: boolean
+        default: false
+      cross-build-targets:
+        description: >-
+          JSON array of {goos, goarch} to cross-compile. linux/amd64 is
+          deliberately absent: the test job runs on ubuntu-latest and does
+          `go build ./...` natively, so it is already gated.
+        required: false
+        type: string
+        default: >-
+          [{"goos":"linux","goarch":"arm64"},
+           {"goos":"darwin","goarch":"amd64"},
+           {"goos":"darwin","goarch":"arm64"},
+           {"goos":"windows","goarch":"amd64"}]
+
+      # --- Tool pins ----------------------------------------------------
+      gotestsum-version:
+        description: 'Pinned so a silent change to its JUnit output cannot break the upload.'
+        required: false
+        type: string
+        default: 'v1.13.0'
+      golangci-lint-version:
+        required: false
+        type: string
+        default: 'v2.11.4'
+      govulncheck-version:
+        required: false
+        type: string
+        default: 'v1.3.0'
+
+    secrets:
+      CODECOV_TOKEN:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Start Postgres
+        if: inputs.postgres-image != ''
+        # Credentials are fixed and throwaway: this container is reachable
+        # only from this runner and is destroyed with it.
+        env:
+          POSTGRES_IMAGE: ${{ inputs.postgres-image }}
+        run: |
+          docker run -d --name ci-postgres \
+            -e POSTGRES_USER=ci -e POSTGRES_PASSWORD=ci -e POSTGRES_DB=ci_test \
+            -p 5432:5432 \
+            "$POSTGRES_IMAGE"
+
+          for _ in $(seq 1 30); do
+            if docker exec ci-postgres pg_isready -U ci -d ci_test >/dev/null 2>&1; then
+              echo "Postgres is ready"
+              echo "DATABASE_URL=postgres://ci:ci@localhost:5432/ci_test?sslmode=disable" >> "$GITHUB_ENV"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::Postgres did not become ready in 60s"
+          docker logs ci-postgres
+          exit 1
+
+      - name: Build
+        run: go build ./...
+
+      - name: Install gotestsum
+        run: go install gotest.tools/gotestsum@${{ inputs.gotestsum-version }}
+
+      - name: Test with coverage
+        # `shell: bash` for pipefail. The default Linux shell is `bash -e` with
+        # NO pipefail, so the step would exit with tee's status (always 0) and
+        # a failing test would go green — that masked a flaky test for a while. The pipe is load-bearing: the summary step reads coverage.out,
+        # but test-output.txt is the raw log kept for debugging.
+        shell: bash
+        # Inputs come in as env rather than being interpolated into the script
+        # body: `${{ }}` splices text straight into the shell before it runs,
+        # so a quote or a `$` in an input would rewrite the command rather than
+        # be passed to it.
+        env:
+          TEST_FLAGS: ${{ inputs.test-flags }}
+          WANT_COVERPKG: ${{ inputs.coverpkg }}
+        run: |
+          coverpkg=""
+          if [ "$WANT_COVERPKG" = "true" ]; then
+            coverpkg="-coverpkg=./..."
+          fi
+          # Unquoted on purpose — TEST_FLAGS is a list of flags that must word-split.
+          # shellcheck disable=SC2086
+          gotestsum --junitfile junit.xml -- \
+            $TEST_FLAGS $coverpkg \
+            -coverprofile=coverage.out -covermode=atomic ./... 2>&1 | tee test-output.txt
+
+      - name: Compact coverage profile
+        # -coverpkg makes every test binary emit a block for every instrumented
+        # package, so the raw profile repeats each block once per binary: on a
+        # large tree that is 13M lines and 997 MB, far past what a Codecov
+        # upload should carry. Summing duplicate blocks is exact under -covermode=atomic and
+        # gets back a 2.6 MB profile with an identical total.
+        if: always() && inputs.coverpkg
+        run: |
+          [ -f coverage.out ] || exit 0
+          awk 'NR==1 { print; next } { n[$1] = $2; c[$1] += $3 } END { for (k in n) print k, n[k], c[k] }' \
+            coverage.out > coverage.merged
+          mv coverage.merged coverage.out
+
+      - name: Fuzz tests (seed corpus)
+        if: inputs.fuzz-targets != ''
+        shell: bash
+        env:
+          FUZZ_TARGETS: ${{ inputs.fuzz-targets }}
+          FUZZ_TIME: ${{ inputs.fuzz-time }}
+        run: |
+          # `while read` in a pipeline runs in a subshell, so a failure inside
+          # it would not fail the step. Read from a here-string instead and let
+          # `set -e` do its job.
+          while read -r pkg target; do
+            [ -z "$pkg" ] && continue
+            echo "::group::fuzz $target ($pkg)"
+            go test "$pkg" -run "^$" -fuzz "$target" -fuzztime "$FUZZ_TIME"
+            echo "::endgroup::"
+          done <<< "$FUZZ_TARGETS"
+
+      - name: Upload coverage to Codecov
+        if: inputs.codecov
+        uses: codecov/codecov-action@v7.0.0
+        with:
+          files: coverage.out
+          disable_search: true
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Upload test results to Codecov
+        # test-results-action@v1 is deprecated; codecov-action does both jobs,
+        # distinguished by report_type. Runs on `!cancelled()` so a failing
+        # suite still reports *which* tests failed — that is the whole point of
+        # the JUnit upload, and with pipefail the test step now does fail.
+        if: ${{ inputs.codecov && !cancelled() }}
+        uses: codecov/codecov-action@v7.0.0
+        with:
+          report_type: test_results
+          files: junit.xml
+          disable_search: true
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Generate coverage summary
+        if: always()
+        shell: bash
+        run: |
+          [ -f coverage.out ] || exit 0
+          total=$(go tool cover -func=coverage.out | tail -1 | awk '{print $NF}')
+          {
+            echo "## Test Results"
+            echo ""
+            echo "**Total coverage: ${total}**"
+            echo ""
+            echo "| Package | Coverage |"
+            echo "|---------|----------|"
+            # Recomputed from the profile: under -coverpkg every package reports
+            # its share of ALL statements, so `go test`'s own per-package number
+            # is no longer the package's own coverage. Summing the profile's
+            # blocks by package restores that, and credits statements covered by
+            # another package's tests. LC_ALL=C so printf emits a dot, not a
+            # locale decimal comma.
+            LC_ALL=C awk 'NR>1 {
+              split($1, a, ":"); n = split(a[1], b, "/")
+              pkg = b[1]; for (i = 2; i < n; i++) pkg = pkg "/" b[i]
+              tot[pkg] += $2; if ($3 > 0) cov[pkg] += $2
+            } END {
+              for (k in tot) printf "| `%s` | %.1f%% |\n", k, 100 * cov[k] / tot[k]
+            }' coverage.out | sort
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  platform:
+    name: Test (${{ matrix.os }})
+    if: inputs.platform-tests
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        run: go build ./...
+
+      # No -race here, deliberately. Data races are OS-independent and the
+      # Linux `test` job already covers them under the race detector; what this
+      # job is for is filesystem, path and locking behaviour. Dropping -race
+      # also avoids depending on a C toolchain on the Windows image, which
+      # would make the job fail for a reason unrelated to the bug class it
+      # exists to catch.
+      - name: Test
+        run: go test -count=1 ./...
+
+  offline:
+    name: Offline test isolation
+    if: inputs.offline-isolation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Run the unit suite with no network
+        # A new network namespace with only loopback up: httptest still binds
+        # 127.0.0.1, every outbound request fails immediately. `ip link set lo
+        # up` is load-bearing — without it httptest cannot bind and every
+        # package fails for the wrong reason.
+        #
+        # `sudo unshare` rather than `unshare -r` because Ubuntu restricts
+        # unprivileged user namespaces via AppArmor; runners have passwordless
+        # sudo. We drop straight back to the normal user so the Go caches
+        # populated by setup-go are reused — HOME/GOCACHE/GOMODCACHE must be
+        # passed explicitly because sudo resets HOME even with --preserve-env.
+        #
+        # Integration tests are excluded by their build tag, so nothing here
+        # tries to reach a real site on purpose.
+        run: |
+          GOCACHE=$(go env GOCACHE)
+          GOMODCACHE=$(go env GOMODCACHE)
+          sudo unshare --net sh -c "
+            ip link set lo up
+            exec sudo -u '$USER' env \
+              HOME='$HOME' GOCACHE='$GOCACHE' GOMODCACHE='$GOMODCACHE' PATH='$PATH' \
+              go test -count=1 ./...
+          "
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Run go vet
+        run: go vet ./...
+
+      - name: Run go vet (integration build tag)
+        if: inputs.vet-integration-tag
+        run: go vet -tags=integration ./...
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v9.3.0
+        with:
+          version: ${{ inputs.golangci-lint-version }}
+          args: --timeout=5m
+
+      - name: Check AUR .SRCINFO is in sync with PKGBUILD
+        # If this fails locally, run packaging/aur/gen-srcinfo.sh and commit.
+        if: inputs.check-aur-srcinfo
+        run: ./packaging/aur/gen-srcinfo.sh --check
+
+      - name: Check Dockerfile GO_VERSION matches go.mod
+        if: inputs.check-dockerfile-go-version
+        # Reads go.mod inline rather than shelling out to the repo's
+        # scripts/go-version.sh, so this job does not require every repo to
+        # ship an identical copy of that script.
+        run: |
+          gomod_ver=$(awk '/^go [0-9]+\.[0-9]+(\.[0-9]+)?$/ { print $2; exit }' go.mod)
+          dockerfile_ver=$(awk -F= '/^ARG GO_VERSION=/ { print $2; exit }' Dockerfile)
+          if [ "$gomod_ver" != "$dockerfile_ver" ]; then
+            echo "::error::go.mod says Go $gomod_ver but Dockerfile default ARG GO_VERSION=$dockerfile_ver."
+            echo "::error::Edit Dockerfile so the ARG GO_VERSION default matches go.mod."
+            exit 1
+          fi
+          echo "OK: Dockerfile GO_VERSION=$dockerfile_ver matches go.mod"
+
+  # Vulncheck is intentionally informational and is NOT gated on release.
+  # The Go vulnerability database reports findings for older Go *toolchains*
+  # as well as third-party deps, so a "fail on any finding" policy would
+  # require bumping go.mod on every new Go point release to keep the pipeline
+  # green. We prefer to see findings as warnings and decide deliberately when
+  # to upgrade — see each repo's CONTRIBUTING.md → "CI security checks".
+  vulncheck:
+    name: Vulncheck (informational)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@${{ inputs.govulncheck-version }}
+
+      - name: Run govulncheck
+        run: govulncheck ./... || echo "::warning::govulncheck found vulnerabilities (see above)"
+
+  cross-build:
+    name: Cross-build (${{ matrix.goos }}/${{ matrix.goarch }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include: ${{ fromJSON(inputs.cross-build-targets) }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          BINARY_NAME: ${{ inputs.binary-name }}
+          MAIN_PACKAGE: ${{ inputs.main-package }}
+        run: |
+          binary="$BINARY_NAME"
+          if [ "$GOOS" = "windows" ]; then binary="${binary}.exe"; fi
+          go build -o "$binary" "$MAIN_PACKAGE"
