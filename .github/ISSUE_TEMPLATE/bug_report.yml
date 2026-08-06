@@ -1,0 +1,66 @@
+name: Bug report
+description: Something behaves differently than it should
+labels: ["bug"]
+
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        If this is a security issue, stop — don't file it publicly. Use the
+        "Report a vulnerability" button under the Security tab.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you observed, and what you expected instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: input
+    attributes:
+      label: The input that triggered it
+      description: >-
+        The single most useful thing in this report. The URL, filename, config
+        snippet, or file that broke it — this is what becomes the regression
+        test. Redact anything private, but keep the shape intact.
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Command you ran
+      description: The exact invocation, plus any relevant config.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: >-
+        Full error or unexpected output. Re-run with verbose/debug output if
+        the tool has it.
+      render: text
+    validations:
+      required: false
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `<binary> --version`, or the image tag / commit.
+    validations:
+      required: true
+
+  - type: input
+    id: platform
+    attributes:
+      label: OS and install method
+      description: e.g. "Arch Linux, AUR" or "Debian 13, .deb" or "Docker, ghcr.io"
+    validations:
+      required: true

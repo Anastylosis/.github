@@ -1,0 +1,14 @@
+blank_issues_enabled: true
+
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/Anastylosis/.github/blob/master/SECURITY.md
+    about: >-
+      Do not open a public issue. Use the "Report a vulnerability" button under
+      this repository's Security tab.
+
+  - name: Question or usage help
+    url: https://github.com/Anastylosis
+    about: >-
+      Check the repository's README and MANUAL first. If a repo has Discussions
+      enabled, ask there rather than opening an issue.
