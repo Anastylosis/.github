@@ -70,6 +70,12 @@ on:
         description: >-
           Markdown for the "Installation" section. Project-specific — this is
           the part that genuinely differs between repos.
+
+          The literal token {{version}} is replaced with the tag minus its `v`
+          prefix. Use it for container image tags and nothing else: docker
+          metadata-action's semver patterns strip the `v`, so a v1.2.3 tag
+          publishes the image as 1.2.3. Archive names and `go install` both
+          keep the `v`, so those want the github.ref_name expression instead.
         required: false
         type: string
         default: ''
@@ -293,6 +299,16 @@ jobs:
           CHANGELOG: ${{ steps.changelog.outputs.changelog }}
           INSTALL: ${{ inputs.install-instructions }}
         run: |
+          # Container image tags carry no `v`: docker/metadata-action's semver
+          # patterns strip it, so tag v1.2.3 publishes image 1.2.3. Archive
+          # names and `go install` DO keep it. Interpolating the raw tag into a
+          # `docker pull` line is therefore a command that 404s — which is
+          # exactly what the hand-written release notes did for a long time.
+          IMAGE_TAG="${TAG#v}"
+
+          # Callers write {{version}} where they need the stripped form.
+          INSTALL="${INSTALL//\{\{version\}\}/$IMAGE_TAG}"
+
           {
             # Only emit the callout when the tag was annotated — an empty
             # TAGNOTE would otherwise open the release body with blank lines.
@@ -346,8 +362,8 @@ jobs:
           The Docker image is published with a [SLSA v1 build attestation](https://slsa.dev/) you can verify before pulling. The attestation is stored on the release workflow run, not embedded in the image index, so the manifest list stays clean.
 
           \`\`\`sh
-          docker pull ${DOCKER_IMAGE}:${TAG}
-          digest=\$(docker buildx imagetools inspect ${DOCKER_IMAGE}:${TAG} --format '{{json .Manifest}}' | jq -r '.digest')
+          docker pull ${DOCKER_IMAGE}:${IMAGE_TAG}
+          digest=\$(docker buildx imagetools inspect ${DOCKER_IMAGE}:${IMAGE_TAG} --format '{{json .Manifest}}' | jq -r '.digest')
           gh attestation verify oci://${DOCKER_IMAGE}@\$digest --owner ${OWNER}
           \`\`\`
 
