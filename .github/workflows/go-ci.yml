@@ -55,7 +55,13 @@ on:
         type: string
         default: ''
       codecov:
-        description: 'Upload coverage and JUnit results to Codecov.'
+        description: >-
+          Upload coverage and JUnit results to Codecov, authenticating with
+          GitHub's OIDC token. The calling job must grant `id-token: write`.
+
+          Uploads from a fork's pull request cannot get an OIDC token and fall
+          back to Codecov's tokenless path; `fail_ci_if_error: false` keeps
+          that quiet rather than failing the PR.
         required: false
         type: boolean
         default: true
@@ -152,10 +158,6 @@ on:
         type: string
         default: 'v1.3.0'
 
-    secrets:
-      CODECOV_TOKEN:
-        required: false
-
 permissions:
   contents: read
 
@@ -163,6 +165,11 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Codecov authenticates via GitHub's OIDC token rather than a stored
+      # upload token — nothing to provision per repo, nothing to rotate.
+      id-token: write
     steps:
       - uses: actions/checkout@v7.0.1
 
@@ -259,10 +266,10 @@ jobs:
         if: inputs.codecov
         uses: codecov/codecov-action@v7.0.0
         with:
+          use_oidc: true
           files: coverage.out
           disable_search: true
           fail_ci_if_error: false
-          token: ${{ secrets.CODECOV_TOKEN }}
 
       - name: Upload test results to Codecov
         # test-results-action@v1 is deprecated; codecov-action does both jobs,
@@ -272,11 +279,11 @@ jobs:
         if: ${{ inputs.codecov && !cancelled() }}
         uses: codecov/codecov-action@v7.0.0
         with:
+          use_oidc: true
           report_type: test_results
           files: junit.xml
           disable_search: true
           fail_ci_if_error: false
-          token: ${{ secrets.CODECOV_TOKEN }}
 
       - name: Generate coverage summary
         if: always()
