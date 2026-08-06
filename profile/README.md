@@ -17,6 +17,7 @@ file you already have.
 | [**Custodian**](https://github.com/Anastylosis/Custodian) | **Identity.** Which files are the same scene, which scene is missing its metadata, and what to do about it — safely. |
 | [**MoanSubs**](https://github.com/Anastylosis/MoanSubs) | **Subtitles that already exist.** A database keyed by video fingerprint, so a subtitle reaches your copy even though your file differs from the one it was made for. |
 | [**Scriptorium**](https://github.com/Anastylosis/Scriptorium) | **Subtitles that don't exist yet.** Transcription and translation for the scenes you mark, generated on your own hardware. |
+| [**MSD**](https://github.com/Anastylosis/MSD) | **The material.** Resolves album, folder, and creator URLs into files and fetches them concurrently, with resume. |
 
 Self-hosted, offline-capable, and built to run against libraries you own.
 [Stash](https://stashapp.cc) is the media manager these integrate with today —
