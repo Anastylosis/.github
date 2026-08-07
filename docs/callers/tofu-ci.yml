@@ -1,0 +1,20 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: Anastylosis/.github/.github/workflows/tofu-ci.yml@v1
+    permissions:
+      contents: read

@@ -12,6 +12,7 @@ factored out so a change lands once.
 
 | Workflow | Replaces | Notes |
 |---|---|---|
+| `tofu-ci.yml` | an OpenTofu/Terraform repo's `ci.yml` | `fmt -check` and `validate`; deliberately no `plan` |
 | `python-ci.yml` | a Python repo's `ci.yml` | lint · test · informational pip-audit, plus opt-in offline isolation |
 | `go-ci.yml` | a repo's `ci.yml` | test · lint · vulncheck · cross-build, plus opt-in platform, offline-isolation and fuzz jobs |
 | `go-release.yml` | a repo's `release.yml` | build · SHA256SUMS · attestation · changelog · GitHub release, plus opt-in nfpm and AUR |

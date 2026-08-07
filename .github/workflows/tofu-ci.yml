@@ -1,0 +1,57 @@
+name: OpenTofu CI (reusable)
+
+# Formatting and validation for an OpenTofu/Terraform config.
+#
+# Deliberately does NOT run `plan`. A plan needs credentials with admin scope
+# and, for an encrypted state, the passphrase — putting both in CI to catch
+# what `validate` mostly catches anyway. Plan and apply stay on a workstation
+# where a human reads the diff. That is a decision, not an omission: see the
+# calling repo's README for how state and auth are handled.
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        required: false
+        type: string
+        default: '.'
+      tofu-version:
+        description: 'Pinned like every other tool here; Dependabot proposes bumps.'
+        required: false
+        type: string
+        default: '1.12.5'
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Format and validate
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - name: Set up OpenTofu
+        uses: opentofu/setup-opentofu@v1.0.5
+        with:
+          tofu_version: ${{ inputs.tofu-version }}
+          # The wrapper rewrites stdout to capture outputs, which mangles the
+          # diff `fmt -check` prints. Nothing here reads step outputs.
+          tofu_wrapper: false
+
+      - name: Check formatting
+        # -recursive so a module directory cannot drift unnoticed. The failure
+        # names the file; `tofu fmt` fixes it.
+        run: tofu fmt -check -recursive -diff
+
+      - name: Initialise without a backend
+        # -backend=false: validation needs the providers, not the state, and
+        # CI has no business holding either the state credentials or the
+        # decryption passphrase.
+        run: tofu init -backend=false -input=false
+
+      - name: Validate
+        run: tofu validate -no-color
