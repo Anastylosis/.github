@@ -199,12 +199,22 @@ jobs:
           cache-to: type=gha,mode=max
           build-args: ${{ steps.args.outputs.build-args }}
 
+      - name: Note that attestation is unavailable
+        # GitHub refuses to persist an attestation for a private repository
+        # unless the org is on a paid plan. Warn rather than fail: the image is
+        # still built, pushed and scanned, and only the provenance record is
+        # missing. Observed on MoanSubs, where every docker run had been red
+        # since the repo was created — a permanent failure nobody could fix
+        # from the workflow.
+        if: github.event_name != 'pull_request' && github.event.repository.private
+        run: echo "::warning title=No build provenance::Attestations require a public repository or a paid plan; this image is published without one."
+
       - name: Attest build provenance
         # SLSA v1 attestation linked to the pushed image digest. Stored on the
         # workflow run, not in the registry — keeps the multi-arch manifest
         # list free of `unknown/unknown` entries. Verify with:
         #   gh attestation verify oci://ghcr.io/<owner>/<repo>@<digest> --owner <owner>
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && !github.event.repository.private
         uses: actions/attest-build-provenance@v4.1.1
         with:
           subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
