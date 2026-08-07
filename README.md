@@ -37,8 +37,10 @@ Three things that bite:
 - **The path is doubled.** Reusable workflows must live in `.github/workflows/`
   of the repository that hosts them, and this repository is named `.github` —
   hence `Anastylosis/.github/.github/workflows/…`. Not a typo.
-- **`secrets: inherit` is required** for anything using `CODECOV_TOKEN` or
-  `AUR_SSH_PRIVATE_KEY`. Reusable workflows receive no secrets by default.
+- **`secrets: inherit` is required** for anything using `AUR_SSH_PRIVATE_KEY`.
+  Reusable workflows receive no secrets by default. Codecov needs no secret at
+  all — it authenticates with an OIDC token, which is why the CI callers grant
+  `id-token: write`.
 - **Permissions are capped by the caller.** The `permissions:` block in the
   calling job is the ceiling; the reusable workflow cannot grant itself more.
   Copy the blocks from `docs/callers/` verbatim.
