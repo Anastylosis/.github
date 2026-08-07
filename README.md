@@ -1,7 +1,7 @@
 # Anastylosis/.github
 
 Reusable GitHub Actions workflows and org-wide defaults for the Anastylosis
-projects.
+projects, Go and Python alike.
 
 Each project used to carry its own hand-maintained copy of the same pipeline.
 They drifted — most visibly in action pins, where the same action sat at three
@@ -12,6 +12,7 @@ factored out so a change lands once.
 
 | Workflow | Replaces | Notes |
 |---|---|---|
+| `python-ci.yml` | a Python repo's `ci.yml` | lint · test · informational pip-audit, plus opt-in offline isolation |
 | `go-ci.yml` | a repo's `ci.yml` | test · lint · vulncheck · cross-build, plus opt-in platform, offline-isolation and fuzz jobs |
 | `go-release.yml` | a repo's `release.yml` | build · SHA256SUMS · attestation · changelog · GitHub release, plus opt-in nfpm and AUR |
 | `docker-publish.yml` | a repo's `docker.yml` **and** the docker job in its `release.yml` | one workflow, `mode: dev` or `mode: release` |

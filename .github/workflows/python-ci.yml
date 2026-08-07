@@ -1,0 +1,144 @@
+name: Python CI (reusable)
+
+# The Python counterpart to go-ci.yml. Same shape and same conventions —
+# exact-pinned actions, an informational audit rather than a gate — so a
+# Python repo behaves the way the Go ones do rather than being a special case.
+#
+# Actions are pinned to exact versions, not moving major tags. A major tag like
+# @v7 advances whenever v7.x ships, so an unrelated commit can turn CI red.
+# Dependabot proposes bumps; they land deliberately.
+
+on:
+  workflow_call:
+    inputs:
+      python-version:
+        required: false
+        type: string
+        default: '3.12'
+      dev-requirements:
+        description: 'Requirements file holding the test and lint tooling.'
+        required: false
+        type: string
+        default: requirements-dev.txt
+      test-command:
+        description: >-
+          How to run the suite. Overridable because a project that needs a
+          service container or a marker filter cannot express that in a path.
+        required: false
+        type: string
+        default: 'python -m pytest tests/ -q'
+      lint:
+        description: 'Run `ruff check`.'
+        required: false
+        type: boolean
+        default: true
+      audit:
+        description: >-
+          Run pip-audit against the runtime requirements.
+
+          Informational, like govulncheck and Trivy on the Go side: a gate here
+          turns CI red on someone else's advisory and forces dependency bumps
+          on their schedule rather than on a deliberate decision.
+        required: false
+        type: boolean
+        default: true
+      audit-requirements:
+        required: false
+        type: string
+        default: requirements.txt
+      pip-audit-version:
+        description: 'Pinned so a new release cannot change the output shape mid-week.'
+        required: false
+        type: string
+        default: '2.9.0'
+      offline-isolation:
+        description: >-
+          Re-run the suite in a network namespace with only loopback up.
+          Catches a test that quietly reaches the internet and therefore passes
+          while the code under it is broken. Off by default because a suite
+          that legitimately needs a service container cannot use it.
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: ${{ inputs.python-version }}
+          cache: pip
+          cache-dependency-path: ${{ inputs.dev-requirements }}
+
+      - name: Install dev dependencies
+        run: pip install -r "${{ inputs.dev-requirements }}"
+
+      - name: Lint
+        if: inputs.lint
+        run: ruff check .
+
+      - name: Test
+        env:
+          TEST_COMMAND: ${{ inputs.test-command }}
+        # Unquoted expansion is intended: TEST_COMMAND is a command line.
+        # shellcheck disable=SC2086
+        run: $TEST_COMMAND
+
+  offline:
+    name: Offline test isolation
+    if: inputs.offline-isolation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: ${{ inputs.python-version }}
+          cache: pip
+          cache-dependency-path: ${{ inputs.dev-requirements }}
+
+      - name: Install dev dependencies
+        run: pip install -r "${{ inputs.dev-requirements }}"
+
+      - name: Run the suite with no network
+        # A new network namespace with only loopback up. `ip link set lo up` is
+        # load-bearing: without it anything binding 127.0.0.1 fails for the
+        # wrong reason and every test errors misleadingly.
+        #
+        # `sudo unshare` rather than `unshare -r` because Ubuntu restricts
+        # unprivileged user namespaces via AppArmor; runners have passwordless
+        # sudo. Dropping back to the normal user keeps the pip cache usable —
+        # HOME must be passed explicitly because sudo resets it.
+        env:
+          TEST_COMMAND: ${{ inputs.test-command }}
+        run: |
+          sudo unshare --net sh -c "
+            ip link set lo up
+            exec sudo -u '$USER' env HOME='$HOME' PATH='$PATH' $TEST_COMMAND
+          "
+
+  audit:
+    name: Audit dependencies
+    if: inputs.audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Install pip-audit
+        run: pip install "pip-audit==${{ inputs.pip-audit-version }}"
+
+      - name: Audit
+        env:
+          REQS: ${{ inputs.audit-requirements }}
+        run: pip-audit -r "$REQS" || echo "::warning::pip-audit reported findings"

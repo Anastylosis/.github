@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: Anastylosis/.github/.github/workflows/python-ci.yml@v1
+    permissions:
+      contents: read
+    with:
+      python-version: '3.12'
+
+# Image builds live in docker.yml (branch and sha tags) and release.yml
+# (version tags), so they are not duplicated here.
