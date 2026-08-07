@@ -51,6 +51,29 @@ on:
         required: false
         type: string
         default: '2.9.0'
+      coverage:
+        description: >-
+          Measure coverage and upload it to Codecov.
+
+          Authentication is GitHub's OIDC token, so there is no secret to
+          provision — but the calling job must grant `id-token: write`, or the
+          run fails at startup before any step executes.
+        required: false
+        type: boolean
+        default: true
+      coverage-source:
+        description: 'Package or directory to measure. Defaults to the whole tree.'
+        required: false
+        type: string
+        default: '.'
+      pytest-cov-version:
+        description: >-
+          Installed by this workflow rather than required in the repo's dev
+          requirements, so turning coverage on costs a caller one input rather
+          than a dependency bump.
+        required: false
+        type: string
+        default: '7.0.0'
       offline-isolation:
         description: >-
           Re-run the suite in a network namespace with only loopback up.
@@ -68,6 +91,10 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Codecov authenticates via OIDC rather than a stored token.
+      id-token: write
     steps:
       - uses: actions/checkout@v7.0.1
 
@@ -84,12 +111,32 @@ jobs:
         if: inputs.lint
         run: ruff check .
 
+      - name: Install pytest-cov
+        if: inputs.coverage
+        run: pip install "pytest-cov==${{ inputs.pytest-cov-version }}"
+
       - name: Test
         env:
           TEST_COMMAND: ${{ inputs.test-command }}
-        # Unquoted expansion is intended: TEST_COMMAND is a command line.
-        # shellcheck disable=SC2086
-        run: $TEST_COMMAND
+          COVER: ${{ inputs.coverage }}
+          SOURCE: ${{ inputs.coverage-source }}
+        run: |
+          args=""
+          if [ "$COVER" = "true" ]; then
+            args="--cov=$SOURCE --cov-report=xml --cov-report=term"
+          fi
+          # Unquoted on purpose: both are command-line fragments.
+          # shellcheck disable=SC2086
+          $TEST_COMMAND $args
+
+      - name: Upload coverage to Codecov
+        if: inputs.coverage
+        uses: codecov/codecov-action@v7.0.0
+        with:
+          use_oidc: true
+          files: coverage.xml
+          disable_search: true
+          fail_ci_if_error: false
 
   offline:
     name: Offline test isolation

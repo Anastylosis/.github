@@ -19,8 +19,15 @@ jobs:
     uses: Anastylosis/.github/.github/workflows/python-ci.yml@v1
     permissions:
       contents: read
+      # Required by the Codecov upload, which authenticates via OIDC. A
+      # reusable workflow cannot grant itself more than its caller holds, so
+      # omitting this fails the run at startup with no log.
+      id-token: write
     with:
       python-version: '3.12'
+      # Measure the package, not the whole tree — otherwise tests/ and
+      # tooling dilute the figure.
+      coverage-source: my_package
 
 # Image builds live in docker.yml (branch and sha tags) and release.yml
 # (version tags), so they are not duplicated here.
