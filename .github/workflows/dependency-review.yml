@@ -1,0 +1,52 @@
+name: Dependency review (reusable)
+
+# Flags a pull request that introduces a dependency with a known advisory
+# before it is merged, rather than after Dependabot notices it on the default
+# branch.
+#
+# On a solo repo this does nothing, by design: it only runs on pull_request,
+# and a maintainer pushing straight to master never triggers it. It is here so
+# the first outside contribution is reviewed properly on arrival, rather than
+# a workflow being written in a hurry once one shows up.
+
+on:
+  workflow_call:
+    inputs:
+      fail-on-severity:
+        description: >-
+          Block the PR at this severity and above. `high` is the default: a
+          lower bar is noise on a small change, and Dependabot picks the rest
+          up on its weekly pass.
+        required: false
+        type: string
+        default: high
+
+permissions:
+  contents: read
+
+jobs:
+  review:
+    name: Review dependency changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Required by comment-summary-in-pr. Without it the action cannot post
+      # and the step fails for a reason unrelated to any dependency.
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      # The dependency graph this reads is only available on public
+      # repositories unless the org pays for Advanced Security. Warn instead of
+      # failing, the same way build attestation does — a permanently red check
+      # nobody can fix from the workflow teaches people to ignore red checks.
+      - name: Note that dependency review is unavailable
+        if: github.event.repository.private
+        run: echo "::warning title=No dependency review::Dependency review needs a public repository or GitHub Advanced Security; this pull request was not checked."
+
+      - name: Dependency review
+        if: ${{ !github.event.repository.private }}
+        uses: actions/dependency-review-action@v5.0.0
+        with:
+          fail-on-severity: ${{ inputs.fail-on-severity }}
+          comment-summary-in-pr: on-failure

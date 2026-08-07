@@ -1,0 +1,48 @@
+# Optional security workflows. Both are opt-in per repo.
+#
+# dependency-review is worth having everywhere that takes pull requests: it
+# does nothing on a solo push-to-master repo, and is there so the first outside
+# contribution is checked on arrival.
+#
+# codeql earns its keep where the code parses input it does not control —
+# scraped HTML, uploaded files, anything attacker-influenced that becomes SQL,
+# a file path or XML. On a repo that only talks to its own database it is
+# mostly cost, so enable it deliberately rather than by default.
+
+name: Security
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  schedule:
+    # Weekly, so a newly published query finds old code without a push.
+    # Deliberately off the hour — GitHub sheds load at popular cron times.
+    - cron: '27 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dependency-review:
+    # Only meaningful on a pull request; the action has nothing to diff on a
+    # push.
+    if: github.event_name == 'pull_request'
+    uses: Anastylosis/.github/.github/workflows/dependency-review.yml@v1
+    permissions:
+      contents: read
+      pull-requests: write
+
+  codeql:
+    uses: Anastylosis/.github/.github/workflows/codeql.yml@v1
+    permissions:
+      security-events: write
+      contents: read
+      actions: read
+    with:
+      language: go

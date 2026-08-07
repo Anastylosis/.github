@@ -15,6 +15,8 @@ factored out so a change lands once.
 | `go-ci.yml` | a repo's `ci.yml` | test · lint · vulncheck · cross-build, plus opt-in platform, offline-isolation and fuzz jobs |
 | `go-release.yml` | a repo's `release.yml` | build · SHA256SUMS · attestation · changelog · GitHub release, plus opt-in nfpm and AUR |
 | `docker-publish.yml` | a repo's `docker.yml` **and** the docker job in its `release.yml` | one workflow, `mode: dev` or `mode: release` |
+| `dependency-review.yml` | a repo's `dependency-review.yml` | opt-in; flags a PR introducing a known-vulnerable dependency |
+| `codeql.yml` | a repo's `codeql.yml` | opt-in; taint tracking, for code that parses input it does not control |
 
 Ready-to-copy caller files are in [`docs/callers/`](docs/callers/).
 
@@ -78,9 +80,6 @@ change — the exact problem this repository exists to remove.
 
 ## What deliberately stays per-repo
 
-- **CodeQL and dependency-review.** Taint tracking only earns its keep against
-  a large parsing surface; it is enabled where that applies rather than
-  everywhere.
 - **`scripts/go-version.sh`.** Still useful locally
   (`docker build --build-arg GO_VERSION=$(scripts/go-version.sh) .`), but the
   workflows read `go.mod` inline, so no repo needs a copy for CI to work.
