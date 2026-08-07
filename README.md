@@ -41,9 +41,15 @@ Three things that bite:
   Reusable workflows receive no secrets by default. Codecov needs no secret at
   all — it authenticates with an OIDC token, which is why the CI callers grant
   `id-token: write`.
-- **Permissions are capped by the caller.** The `permissions:` block in the
-  calling job is the ceiling; the reusable workflow cannot grant itself more.
-  Copy the blocks from `docs/callers/` verbatim.
+- **Permissions are capped by the caller, and a shortfall is fatal.** The
+  `permissions:` block in the calling job is the ceiling; the reusable
+  workflow cannot grant itself more. If it *requests* more, the run fails at
+  startup — `startup_failure`, before a single step executes and with no log
+  to read.
+
+  In particular **every `go-ci.yml` caller must grant `id-token: write`**, even
+  with `codecov: false`, because the test job declares it unconditionally for
+  Codecov's OIDC auth. Copy the blocks from `docs/callers/` verbatim.
 
 ## Action pinning policy
 

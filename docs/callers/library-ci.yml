@@ -1,0 +1,38 @@
+# CI caller for a library (no binary, no coverage upload).
+#
+# Note id-token: write is present despite codecov: false. The shared test job
+# declares that permission unconditionally, and a reusable workflow requesting
+# more than its caller grants fails the run at startup with no log. Both
+# subtitlematch and stash-go hit exactly this.
+
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: Anastylosis/.github/.github/workflows/go-ci.yml@v1
+    permissions:
+      contents: read
+      checks: write
+      id-token: write
+    secrets: inherit
+    with:
+      # A library still sets binary-name: it only labels the cross-build
+      # matrix, which proves the package compiles for each target.
+      binary-name: my-library
+      main-package: .
+      codecov: false
+      offline-isolation: true
+      platform-tests: true
