@@ -14,6 +14,7 @@ file you already have.
 
 | Project | The piece it recovers |
 |---|---|
+| [**FSS**](https://github.com/Anastylosis/FSS) | **The metadata itself.** Every scene a studio has published — title, performers, date, description — scraped from the studio's own site, across 1,600+ of them. |
 | [**Custodian**](https://github.com/Anastylosis/Custodian) | **Identity.** Which files are the same scene, which scene is missing its metadata, and what to do about it — safely. |
 | [**MoanSubs**](https://github.com/Anastylosis/MoanSubs) | **Subtitles that already exist.** A database keyed by video fingerprint, so a subtitle reaches your copy even though your file differs from the one it was made for. |
 | [**Scriptorium**](https://github.com/Anastylosis/Scriptorium) | **Subtitles that don't exist yet.** Transcription and translation for the scenes you mark, generated on your own hardware. |
