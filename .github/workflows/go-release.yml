@@ -68,6 +68,15 @@ on:
         required: false
         type: string
         default: ''
+      pre-release-notice:
+        description: >-
+          Emitted as a `::notice` at the top of the publish job, once the gate
+          has been approved. The gate is a trust-me check — nothing verifies
+          that the reviewer ran anything — so this is where the run log records
+          what they attested to. Empty omits it.
+        required: false
+        type: string
+        default: ''
 
       discussion-category:
         description: >-
@@ -231,6 +240,12 @@ jobs:
       - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
+
+      - name: Pre-release reminder
+        if: inputs.pre-release-notice != ''
+        env:
+          NOTICE: ${{ inputs.pre-release-notice }}
+        run: echo "::notice title=Manual checks confirmed::${NOTICE}"
 
       - name: Download release artifacts
         if: inputs.artifacts

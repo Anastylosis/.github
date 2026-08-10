@@ -353,6 +353,16 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Prime the module and build caches
+        # Everything the suite needs has to be on disk before the namespace
+        # closes. setup-go usually restores the module cache, but on a miss —
+        # a go.sum change, which is exactly when this job matters — the test
+        # run would try to download inside the namespace and fail for a reason
+        # that has nothing to do with a test reaching the network.
+        run: |
+          go mod download
+          go build ./...
+
       - name: Run the unit suite with no network
         # A new network namespace with only loopback up: httptest still binds
         # 127.0.0.1, every outbound request fails immediately. `ip link set lo

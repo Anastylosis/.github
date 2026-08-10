@@ -1,0 +1,101 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    uses: Anastylosis/.github/.github/workflows/go-release.yml@v1
+    permissions:
+      # contents: write to publish the release; the rest are for
+      # attest-build-provenance over the downloadable artifacts.
+      contents: write
+      discussions: write
+      id-token: write
+      attestations: write
+    secrets: inherit
+    with:
+      binary-name: fss
+      main-package: '.'
+      nfpm: true
+      aur: true
+      aur-pkgname: fss
+      aur-commit-username: Wasylq
+      aur-commit-email: wasylq@protonmail.com
+      # Pauses until a reviewer of the `manual-smoke-gate` environment approves,
+      # attesting they ran `make smoke` — CI cannot, because Cloudflare blocks
+      # GitHub runner IP ranges and Stash is a local service. The docker job
+      # below inherits the gate transitively via `needs`, so one approval covers
+      # both. See CONTRIBUTING.md → "Cutting a release".
+      environment-name: manual-smoke-gate
+      environment-url: ${{ github.server_url }}/${{ github.repository }}/blob/master/CONTRIBUTING.md#cutting-a-release
+      pre-release-notice: >-
+        Approver attests they have run the release checklist (integration smoke
+        tests, changelog review).
+      # The category must already exist; renaming it on GitHub without changing
+      # it here fails the API call after the gate has been approved.
+      discussion-category: Announcements
+      docker-image: ghcr.io/anastylosis/fss
+      # {{version}} is the tag minus its `v` — docker/metadata-action's semver
+      # patterns strip it, so a v1.2.3 tag publishes the image as 1.2.3. Archive
+      # names and `go install` keep the `v`, so those use github.ref_name.
+      install-instructions: |
+        Download the binary for your platform, extract, and place it on your PATH:
+
+        ```sh
+        # Linux (amd64)
+        tar xzf fss-${{ github.ref_name }}-linux-amd64.tar.gz
+        chmod +x fss
+        ./fss --version
+
+        # macOS (Apple Silicon)
+        tar xzf fss-${{ github.ref_name }}-darwin-arm64.tar.gz
+        chmod +x fss
+        ./fss --version
+        ```
+
+        ### Linux packages
+
+        ```sh
+        # Arch Linux (AUR)
+        yay -S fss
+
+        # Debian / Ubuntu
+        sudo dpkg -i fss_*_amd64.deb
+
+        # Fedora / RHEL
+        sudo rpm -i fss_*_amd64.rpm
+        ```
+
+        Or build from source:
+        ```sh
+        go install github.com/Anastylosis/FSS@${{ github.ref_name }}
+        ```
+
+        Or pull the Docker image:
+        ```sh
+        docker pull ghcr.io/anastylosis/fss:{{version}}
+        ```
+
+  docker:
+    name: Build and push docker image
+    # Runs only after the gated release job succeeds, so no image lands on GHCR
+    # unless the manual smoke-test gate was approved.
+    needs: release
+    uses: Anastylosis/.github/.github/workflows/docker-publish.yml@v1
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    with:
+      mode: release

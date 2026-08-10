@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: Anastylosis/.github/.github/workflows/go-ci.yml@v1
+    permissions:
+      contents: read
+      checks: write
+      # Codecov uploads authenticate with an OIDC token rather than a stored
+      # CODECOV_TOKEN. A reusable workflow cannot grant itself more than the
+      # caller holds, so it has to be here — without it the upload silently
+      # no-ops (`fail_ci_if_error: false`) and coverage stops moving.
+      id-token: write
+    secrets: inherit
+    with:
+      binary-name: fss
+      main-package: '.'
+      # Registry tests in internal/scrapers/all drive ID/Patterns/MatchesURL
+      # and ListScenes across every registered scraper; without -coverpkg those
+      # ~1400 exercised statements read as uncovered (80.6% vs 83.8%).
+      coverpkg: true
+      # flock_windows.go makes the process lock a no-op on Windows,
+      # output.atomicWriteFile relies on rename-over-existing semantics that
+      # differ there, and the 250-byte Slugify cap is reasoned from POSIX.
+      platform-tests: true
+      # A scraper unit test that reaches the live site passes while its parser
+      # is broken — maturefetish graded live markup instead of its fixture.
+      offline-isolation: true
+      vet-integration-tag: true
+      check-aur-srcinfo: true
+      check-dockerfile-go-version: true
+      fuzz-targets: |
+        ./match/... FuzzNormalize
+        ./parseutil/... FuzzParseDurationColon
+        ./parseutil/... FuzzParseDurationISO
+        ./output/... FuzzSlugify
+        ./output/... FuzzWriteCSVNeverEmitsAFormula
+        ./nfo/... FuzzMarshalProducesWellFormedXML
