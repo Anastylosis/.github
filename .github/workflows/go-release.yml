@@ -130,8 +130,29 @@ on:
         type: string
         default: ''
 
+      homebrew:
+        description: >-
+          Render the repo's packaging/homebrew/<formula>.rb template into a
+          Homebrew tap. Needs HOMEBREW_TAP_TOKEN with contents:write on the tap
+          repository — GITHUB_TOKEN cannot write to another repo.
+        required: false
+        type: boolean
+        default: false
+      homebrew-tap:
+        description: 'owner/repo of the tap, e.g. Anastylosis/homebrew-tap.'
+        required: false
+        type: string
+        default: ''
+      homebrew-formula:
+        description: 'Formula name without .rb. Defaults to binary-name.'
+        required: false
+        type: string
+        default: ''
+
     secrets:
       AUR_SSH_PRIVATE_KEY:
+        required: false
+      HOMEBREW_TAP_TOKEN:
         required: false
 
 permissions:
@@ -476,3 +497,83 @@ jobs:
           ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
           commit_message: "Update to ${{ github.ref_name }}"
           updpkgsums: true
+
+  homebrew:
+    name: Publish to Homebrew tap
+    runs-on: ubuntu-latest
+    if: inputs.homebrew
+    # Same reasoning as the aur job: decoupled from `release` so a tap push
+    # that fails transiently can be re-run from the Actions UI without
+    # re-cutting the GitHub release.
+    needs: release
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - name: Render the formula
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BINARY_NAME: ${{ inputs.binary-name }}
+          FORMULA: ${{ inputs.homebrew-formula || inputs.binary-name }}
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          template="packaging/homebrew/${FORMULA}.rb"
+          test -f "$template" || { echo "::error::missing $template"; exit 1; }
+
+          # SHA256SUMS is built by the release job over the same archives the
+          # formula points at, so the checksums cannot drift from the assets.
+          gh release download "v${VERSION}" --repo "$GITHUB_REPOSITORY" \
+            --pattern SHA256SUMS --dir sums
+
+          sum() {
+            # $1 = archive filename; awk over "hash  name" pairs.
+            awk -v f="$1" '$2 == f { print $1 }' sums/SHA256SUMS
+          }
+
+          cp "$template" formula.rb
+          sed -i "s/__VERSION__/${VERSION}/g" formula.rb
+          for pair in DARWIN_ARM64:darwin-arm64 DARWIN_AMD64:darwin-amd64 \
+                      LINUX_ARM64:linux-arm64 LINUX_AMD64:linux-amd64; do
+            key="${pair%%:*}"; plat="${pair##*:}"
+            archive="${BINARY_NAME}-v${VERSION}-${plat}.tar.gz"
+            h="$(sum "$archive")"
+            if [ -z "$h" ]; then
+              echo "::error::no checksum for ${archive} in SHA256SUMS"; exit 1
+            fi
+            sed -i "s/__SHA256_${key}__/${h}/g" formula.rb
+          done
+
+          # Fail loudly rather than publish a formula Homebrew cannot resolve.
+          if grep -q "__[A-Z0-9_]*__" formula.rb; then
+            echo "::error::unsubstituted placeholder left in the formula:"
+            grep -n "__[A-Z0-9_]*__" formula.rb
+            exit 1
+          fi
+          ruby -c formula.rb
+
+      - name: Push to the tap
+        env:
+          TAP: ${{ inputs.homebrew-tap }}
+          FORMULA: ${{ inputs.homebrew-formula || inputs.binary-name }}
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$TAP" || { echo "::error::homebrew-tap is required"; exit 1; }
+          test -n "$TAP_TOKEN" || { echo "::error::HOMEBREW_TAP_TOKEN is required"; exit 1; }
+
+          git clone --depth 1 "https://x-access-token:${TAP_TOKEN}@github.com/${TAP}.git" tap
+          mkdir -p tap/Formula
+          cp formula.rb "tap/Formula/${FORMULA}.rb"
+
+          cd tap
+          if git diff --quiet -- "Formula/${FORMULA}.rb"; then
+            echo "Formula already current; nothing to push."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "Formula/${FORMULA}.rb"
+          git commit -m "${FORMULA} ${GITHUB_REF#refs/tags/}"
+          git push
