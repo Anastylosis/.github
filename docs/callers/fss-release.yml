@@ -31,6 +31,11 @@ jobs:
       aur-pkgname: fss
       aur-commit-username: Wasylq
       aur-commit-email: wasylq@protonmail.com
+      # Renders packaging/homebrew/fss.rb into the tap. Needs
+      # HOMEBREW_TAP_SSH_KEY (a write deploy key on the tap repo) via
+      # `secrets: inherit` — GITHUB_TOKEN cannot write to another repository.
+      homebrew: true
+      homebrew-tap: Anastylosis/homebrew-tap
       # Pauses until a reviewer of the `manual-smoke-gate` environment approves,
       # attesting they ran `make smoke` — CI cannot, because Cloudflare blocks
       # GitHub runner IP ranges and Stash is a local service. The docker job
@@ -49,7 +54,13 @@ jobs:
       # patterns strip it, so a v1.2.3 tag publishes the image as 1.2.3. Archive
       # names and `go install` keep the `v`, so those use github.ref_name.
       install-instructions: |
-        Download the binary for your platform, extract, and place it on your PATH:
+        ### Homebrew (macOS and Linux)
+
+        ```sh
+        brew install anastylosis/tap/fss
+        ```
+
+        Or download the binary for your platform, extract, and place it on your PATH:
 
         ```sh
         # Linux (amd64)
