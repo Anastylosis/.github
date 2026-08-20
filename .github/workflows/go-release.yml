@@ -576,4 +576,21 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add "Formula/${FORMULA}.rb"
           git commit -m "${FORMULA} ${GITHUB_REF#refs/tags/}"
-          git push
+
+          # One tap holds every project's formula, so two repos releasing at
+          # once both clone, commit and push, and the slower one is rejected as
+          # non-fast-forward. Rebase and retry: the two commits touch different
+          # Formula/*.rb files, so there is nothing to conflict over. Only this
+          # formula is ever staged, so a rebase cannot pick up someone else's
+          # half-finished work.
+          for attempt in 1 2 3; do
+            if git push; then
+              exit 0
+            fi
+            echo "push rejected (attempt ${attempt}); rebasing on the tap"
+            git pull --rebase --autostash origin HEAD || {
+              echo "::error::could not rebase onto the tap"; exit 1; }
+            sleep $(( attempt * 5 ))
+          done
+          echo "::error::could not push the formula after 3 attempts"
+          exit 1
