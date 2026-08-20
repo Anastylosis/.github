@@ -133,8 +133,10 @@ on:
       homebrew:
         description: >-
           Render the repo's packaging/homebrew/<formula>.rb template into a
-          Homebrew tap. Needs HOMEBREW_TAP_TOKEN with contents:write on the tap
-          repository — GITHUB_TOKEN cannot write to another repo.
+          Homebrew tap. Needs HOMEBREW_TAP_SSH_KEY — a deploy key with write
+          access on the tap repo. GITHUB_TOKEN cannot write to another
+          repository, and a deploy key never expires, so unlike a PAT there is
+          nothing to remember to rotate. Same arrangement as AUR_SSH_PRIVATE_KEY.
         required: false
         type: boolean
         default: false
@@ -152,7 +154,7 @@ on:
     secrets:
       AUR_SSH_PRIVATE_KEY:
         required: false
-      HOMEBREW_TAP_TOKEN:
+      HOMEBREW_TAP_SSH_KEY:
         required: false
 
 permissions:
@@ -557,13 +559,22 @@ jobs:
         env:
           TAP: ${{ inputs.homebrew-tap }}
           FORMULA: ${{ inputs.homebrew-formula || inputs.binary-name }}
-          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAP_SSH_KEY: ${{ secrets.HOMEBREW_TAP_SSH_KEY }}
         run: |
           set -euo pipefail
           test -n "$TAP" || { echo "::error::homebrew-tap is required"; exit 1; }
-          test -n "$TAP_TOKEN" || { echo "::error::HOMEBREW_TAP_TOKEN is required"; exit 1; }
+          test -n "$TAP_SSH_KEY" || { echo "::error::HOMEBREW_TAP_SSH_KEY is required"; exit 1; }
 
-          git clone --depth 1 "https://x-access-token:${TAP_TOKEN}@github.com/${TAP}.git" tap
+          # Key material goes to a file rather than the environment: the
+          # checkout below shells out to ssh, and a private key in the env of a
+          # subprocess is readable from /proc on a shared runner.
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$TAP_SSH_KEY" > ~/.ssh/tap_key
+          chmod 600 ~/.ssh/tap_key
+          ssh-keyscan -t ed25519,rsa github.com >> ~/.ssh/known_hosts 2>/dev/null
+          export GIT_SSH_COMMAND="ssh -o IdentitiesOnly=yes -i ~/.ssh/tap_key"
+
+          git clone --depth 1 "git@github.com:${TAP}.git" tap
           mkdir -p tap/Formula
           cp formula.rb "tap/Formula/${FORMULA}.rb"
 
