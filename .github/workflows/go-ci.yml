@@ -203,7 +203,19 @@ jobs:
           exit 1
 
       - name: Build
-        run: go build ./...
+        # Built with the test step's own -race setting, not without it. A
+        # race build uses different cache keys, so a plain `go build ./...`
+        # here would compile every package into artifacts the -race test step
+        # cannot reuse — a full duplicate compile of the tree, discarded. This
+        # keeps the early "does it build" signal and warms the cache the tests
+        # actually need.
+        env:
+          TEST_FLAGS: ${{ inputs.test-flags }}
+        run: |
+          race=""
+          case " $TEST_FLAGS " in *" -race "*) race="-race" ;; esac
+          # shellcheck disable=SC2086
+          go build $race ./...
 
       - name: Install gotestsum
         run: go install gotest.tools/gotestsum@${{ inputs.gotestsum-version }}
