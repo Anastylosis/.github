@@ -1,0 +1,235 @@
+name: OpenTofu plan and apply (reusable)
+
+# Plan on a pull request, apply on a merge to the default branch.
+#
+# This SUPERSEDES the decision recorded in tofu-ci.yml, which deliberately
+# refused to run plan on the grounds that CI would need admin-scope
+# credentials and, for encrypted state, the passphrase. That reasoning was
+# correct for a config applied from one workstation. It stops being correct
+# once the point is that adding a repository to the config is what creates it.
+#
+# The property that decision actually protected — a human reads the diff
+# before it lands — is preserved, and arguably strengthened:
+#
+#   before   the diff was read by whoever happened to run apply, on a laptop,
+#            with no record that it was read
+#   now      the plan is attached to the pull request, and the apply blocks on
+#            a required reviewer on a GitHub environment, which is recorded
+#
+# What genuinely changed is where the credentials live: GitHub Actions secrets
+# rather than a shell on one machine. That is a real move, and on balance a
+# favourable one — secrets here are rotatable, scoped, revocable and audited,
+# and they are not in shell history or on a disk that can be stolen.
+#
+# tofu-ci.yml is still the right workflow for a repo that only needs fmt and
+# validate. This one is for the repo that owns the state.
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        required: false
+        type: string
+        default: '.'
+      tofu-version:
+        description: 'Pinned like every other tool here; Dependabot proposes bumps.'
+        required: false
+        type: string
+        default: '1.12.6'
+      scalr-hostname:
+        description: 'e.g. anastylosis.scalr.io. The backend block names it too; this is for credentials.'
+        required: true
+        type: string
+      apply-environment:
+        description: >-
+          Optional GitHub environment for the apply job. Leave EMPTY on
+          GitHub Free with a private repo: required-reviewer protection rules
+          need a paid plan there, and an environment without them is
+          decorative — the same "gate that does not gate" failure documented
+          in infra/environments.tf. The gate on Free is workflow_dispatch;
+          see the apply job. Set this once the org is on Team.
+        required: false
+        type: string
+        default: ''
+    secrets:
+      scalr-token:
+        description: 'Scalr service account token. Scoped to the one workspace, not the account.'
+        required: true
+      tofu-encryption-passphrase:
+        description: 'Passphrase for OpenTofu state encryption. Without it this workflow refuses to run.'
+        required: true
+      gh-admin-token:
+        description: 'GitHub token the provider authenticates with. Needs admin:org, repo, workflow, delete_repo.'
+        required: true
+
+permissions:
+  contents: read
+
+# Two applies at once would race for the state lock. Scalr would reject the
+# second, but failing here is clearer than failing at the backend.
+concurrency:
+  group: tofu-apply-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-latest
+    env:
+      # MUST be a multi-line HCL block. A bare passphrase here is not a
+      # "weaker" configuration — OpenTofu fails to parse it and the run dies.
+      # Verified 2026-08-24; an earlier single-line version of this file was
+      # invalid HCL for exactly that reason.
+      TF_ENCRYPTION: |
+        key_provider "pbkdf2" "main" {
+          passphrase = "${{ secrets.tofu-encryption-passphrase }}"
+        }
+        method "aes_gcm" "main" {
+          keys = key_provider.pbkdf2.main
+        }
+        state {
+          method   = method.aes_gcm.main
+          enforced = true
+        }
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - name: Refuse to run without an encryption passphrase
+        # THE MOST IMPORTANT STEP IN THIS FILE.
+        #
+        # `enforced = true` in the encryption block makes OpenTofu refuse to
+        # write plaintext — but only if the block is present at all. An empty
+        # or missing secret produces a TF_ENCRYPTION with an empty passphrase,
+        # which is a different failure and a much quieter one.
+        #
+        # Fail here, before init, where the message says what is wrong.
+        env:
+          PASSPHRASE: ${{ secrets.tofu-encryption-passphrase }}
+        run: |
+          if [ -z "$PASSPHRASE" ]; then
+            echo "::error::tofu-encryption-passphrase is empty or unset."
+            echo "::error::Refusing to continue: state would be written to Scalr in plaintext."
+            exit 1
+          fi
+
+      - name: Set up OpenTofu
+        uses: opentofu/setup-opentofu@v2.0.2
+        with:
+          tofu_version: ${{ inputs.tofu-version }}
+          # The wrapper rewrites stdout to capture outputs, which mangles the
+          # plan diff. Nothing here reads step outputs.
+          tofu_wrapper: false
+
+      - name: Configure Scalr credentials
+        # A credentials file rather than TF_TOKEN_<host>, because that
+        # variable's name is the hostname with dots as underscores and hyphens
+        # as DOUBLE underscores. Encoding that correctly in shell for an
+        # arbitrary input is a bug waiting to happen; this is not.
+        env:
+          SCALR_TOKEN: ${{ secrets.scalr-token }}
+        run: |
+          creds="$RUNNER_TEMP/credentials.tfrc.json"
+          umask 077
+          printf '{"credentials":{"%s":{"token":"%s"}}}\n' \
+            '${{ inputs.scalr-hostname }}' "$SCALR_TOKEN" > "$creds"
+          echo "TF_CLI_CONFIG_FILE=$creds" >> "$GITHUB_ENV"
+
+      - name: Initialise
+        run: tofu init -input=false
+
+      - name: Plan
+        # -lock-timeout so a stale lock waits rather than failing instantly.
+        # -detailed-exitcode is NOT used: 2 means "changes present", which is
+        # the normal case here and must not read as failure.
+        run: |
+          tofu plan -no-color -input=false -lock-timeout=5m | tee "$RUNNER_TEMP/plan.txt"
+        env:
+          GITHUB_TOKEN: ${{ secrets.gh-admin-token }}
+
+      - name: Publish the plan to the job summary
+        # So the diff is readable from the pull request without opening logs.
+        # This is the half of the old "a human reads the diff" property that
+        # lives on the PR; the required reviewer below is the other half.
+        if: always()
+        run: |
+          {
+            echo '## OpenTofu plan'
+            echo
+            echo '```'
+            sed -n '/^\(OpenTofu\|Terraform\) used the selected providers/,$p' "$RUNNER_TEMP/plan.txt" \
+              || cat "$RUNNER_TEMP/plan.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  apply:
+    name: Apply
+    needs: plan
+    # THE GATE, and it is deliberately not automatic.
+    #
+    # The obvious design is apply-on-merge behind an environment with a
+    # required reviewer. That is unavailable here: environment protection
+    # rules need a paid plan on a PRIVATE repository, and this repo is private
+    # on purpose. An environment without protection rules would run straight
+    # through while looking like a gate — exactly the failure infra's own
+    # environments.tf exists to prevent.
+    #
+    # So the gate is workflow_dispatch. The plan runs automatically and is
+    # published to the job summary; applying it takes a person deciding to,
+    # on a specific ref, after reading it. That is the same property the
+    # reviewer rule would have bought, implemented with what Free provides.
+    #
+    # When the org moves to Team, set apply-environment and add
+    # `github.event_name == 'push'` here to get apply-on-merge.
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.apply-environment }}
+    env:
+      # MUST be a multi-line HCL block. A bare passphrase here is not a
+      # "weaker" configuration — OpenTofu fails to parse it and the run dies.
+      # Verified 2026-08-24; an earlier single-line version of this file was
+      # invalid HCL for exactly that reason.
+      TF_ENCRYPTION: |
+        key_provider "pbkdf2" "main" {
+          passphrase = "${{ secrets.tofu-encryption-passphrase }}"
+        }
+        method "aes_gcm" "main" {
+          keys = key_provider.pbkdf2.main
+        }
+        state {
+          method   = method.aes_gcm.main
+          enforced = true
+        }
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - name: Set up OpenTofu
+        uses: opentofu/setup-opentofu@v2.0.2
+        with:
+          tofu_version: ${{ inputs.tofu-version }}
+          tofu_wrapper: false
+
+      - name: Configure Scalr credentials
+        env:
+          SCALR_TOKEN: ${{ secrets.scalr-token }}
+        run: |
+          creds="$RUNNER_TEMP/credentials.tfrc.json"
+          umask 077
+          printf '{"credentials":{"%s":{"token":"%s"}}}\n' \
+            '${{ inputs.scalr-hostname }}' "$SCALR_TOKEN" > "$creds"
+          echo "TF_CLI_CONFIG_FILE=$creds" >> "$GITHUB_ENV"
+
+      - name: Initialise
+        run: tofu init -input=false
+
+      - name: Apply
+        # No -auto-approve alternative exists for a non-interactive run, so the
+        # approval that matters is the environment reviewer above, not a flag.
+        run: tofu apply -auto-approve -input=false -lock-timeout=5m
+        env:
+          GITHUB_TOKEN: ${{ secrets.gh-admin-token }}

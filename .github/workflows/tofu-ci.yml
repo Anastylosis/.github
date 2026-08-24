@@ -2,11 +2,24 @@ name: OpenTofu CI (reusable)
 
 # Formatting and validation for an OpenTofu/Terraform config.
 #
-# Deliberately does NOT run `plan`. A plan needs credentials with admin scope
-# and, for an encrypted state, the passphrase — putting both in CI to catch
-# what `validate` mostly catches anyway. Plan and apply stay on a workstation
-# where a human reads the diff. That is a decision, not an omission: see the
-# calling repo's README for how state and auth are handled.
+# Deliberately does NOT run `plan`, and still should not: a plan needs
+# credentials with admin scope and, for an encrypted state, the passphrase, to
+# catch what `validate` mostly catches anyway.
+#
+# SCOPE NARROWED 2026-08-24. This file used to argue that plan and apply
+# belong on a workstation, full stop. That is no longer the org's position —
+# see tofu-apply.yml, which plans on a pull request and applies behind a
+# required reviewer, because the whole point of the infra repo is that adding
+# a repository to the config is what creates it.
+#
+# So the two are a pair, not a contradiction:
+#
+#   tofu-ci.yml     a config that is not the source of truth for live state.
+#                   No credentials, no state, no secrets. Cheap on every push.
+#   tofu-apply.yml  the repo that owns the state. Credentials, a plan on the
+#                   pull request, and a gated apply.
+#
+# Do not add plan to this file. Call the other one.
 
 on:
   workflow_call:

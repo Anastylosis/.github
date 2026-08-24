@@ -1,0 +1,74 @@
+# Caller for tofu-apply.yml — belongs in Anastylosis/infra/.github/workflows/.
+#
+# Plans on every pull request, applies on merge to the default branch.
+#
+# BEFORE THIS WORKS, three things must exist. Each fails loudly except the
+# last, which fails silently — check it by hand.
+#
+#   1. Three repository secrets on Anastylosis/infra:
+#
+#        SCALR_TOKEN         a Scalr SERVICE ACCOUNT token, not a personal
+#                            one. Personal tokens expire in about a week;
+#                            service account tokens are made for this.
+#                            The account github-actions@anastylosis.scalr.io
+#                            already exists and is scoped to the github-org
+#                            workspace only.
+#
+#        TOFU_PASSPHRASE     the OpenTofu state encryption passphrase. Same
+#                            value as `pass show anastylosis/tofu-state`.
+#                            If this is empty the workflow refuses to run,
+#                            rather than writing plaintext state to Scalr.
+#
+#        GH_ADMIN_TOKEN      a token the github provider authenticates with.
+#                            Needs admin:org, repo, workflow, delete_repo.
+#                            A fine-grained PAT or a GitHub App installation
+#                            token; NOT the automatic per-job GITHUB_TOKEN,
+#                            which cannot administer an organisation.
+#
+#   2. Nothing else. There is deliberately NO environment.
+#
+#      Required-reviewer protection rules need a paid plan on a PRIVATE
+#      repository, and infra is private on purpose. Attempting it returns:
+#
+#        "Failed to create the environment protection rule. Please ensure the
+#         billing plan supports the required reviewers protection rule."
+#
+#      — but GitHub CREATES THE ENVIRONMENT ANYWAY, unprotected. That leaves a
+#      gate-shaped object that gates nothing, which is worse than no gate at
+#      all because it reads as one. Verified and deleted 2026-08-24.
+#
+#      The gate here is instead that apply only runs on workflow_dispatch:
+#      plan runs on every push and pull request and lands in the job summary,
+#      and applying it takes a person choosing to. Set apply-environment and
+#      re-enable apply-on-merge if the org moves to GitHub Team.
+
+name: OpenTofu
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+# Not cancel-in-progress: cancelling an apply halfway through leaves the state
+# lock held and the change half-made.
+concurrency:
+  group: tofu-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  tofu:
+    uses: Anastylosis/.github/.github/workflows/tofu-apply.yml@v1
+    permissions:
+      contents: read
+    with:
+      scalr-hostname: anastylosis.scalr.io
+      # Intentionally unset — see note 2 above.
+      # apply-environment: tofu-apply
+    secrets:
+      scalr-token: ${{ secrets.SCALR_TOKEN }}
+      tofu-encryption-passphrase: ${{ secrets.TOFU_PASSPHRASE }}
+      gh-admin-token: ${{ secrets.GH_ADMIN_TOKEN }}
