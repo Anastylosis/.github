@@ -5,7 +5,9 @@
 # BEFORE THIS WORKS, three things must exist. Each fails loudly except the
 # last, which fails silently — check it by hand.
 #
-#   1. Three repository secrets on Anastylosis/infra:
+#   1. Two repository secrets on Anastylosis/infra. There is deliberately no
+#      encryption passphrase — see the header of tofu-apply.yml for what the
+#      state actually contains and why encrypting it buys nothing here.
 #
 #        SCALR_TOKEN         a Scalr SERVICE ACCOUNT token, not a personal
 #                            one. Personal tokens expire in about a week;
@@ -13,11 +15,6 @@
 #                            The account github-actions@anastylosis.scalr.io
 #                            already exists and is scoped to the github-org
 #                            workspace only.
-#
-#        TOFU_PASSPHRASE     the OpenTofu state encryption passphrase. Same
-#                            value as `pass show anastylosis/tofu-state`.
-#                            If this is empty the workflow refuses to run,
-#                            rather than writing plaintext state to Scalr.
 #
 #        GH_ADMIN_TOKEN      a token the github provider authenticates with.
 #                            Needs admin:org, repo, workflow, delete_repo.
@@ -70,5 +67,4 @@ jobs:
       # apply-environment: tofu-apply
     secrets:
       scalr-token: ${{ secrets.SCALR_TOKEN }}
-      tofu-encryption-passphrase: ${{ secrets.TOFU_PASSPHRASE }}
       gh-admin-token: ${{ secrets.GH_ADMIN_TOKEN }}

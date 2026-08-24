@@ -23,6 +23,25 @@ name: OpenTofu plan and apply (reusable)
 #
 # tofu-ci.yml is still the right workflow for a repo that only needs fmt and
 # validate. This one is for the repo that owns the state.
+#
+# NO STATE ENCRYPTION, decided 2026-08-24 after auditing what is actually in
+# the state. It manages github_repository, _ruleset, _environment,
+# _dependabot_security_updates, github_issue_label and
+# github_organization_settings across seven PUBLIC repositories. No secret
+# values (those are set with `gh secret set` — infra GOTCHAS 4), no tokens
+# (the provider reads GITHUB_TOKEN from the environment), no private repos,
+# nothing marked sensitive. The single non-public value is a billing email
+# that already appears in every signed commit in the org.
+#
+# So encryption would hide a description of public configuration, at the cost
+# of a passphrase that must exist in three places and whose loss makes the
+# state look like corruption. This org lost its state once already; adding an
+# unrecoverable-if-lost secret to the same pipeline is the wrong direction.
+#
+# REVISIT if a private repo comes under management, if org secret NAMES or
+# github_actions_variable are added, or if any resource with a sensitive
+# attribute enters the config. Retrofitting is `tofu apply -refresh-only`
+# with TF_ENCRYPTION set — cheap, so deciding later costs nothing.
 
 on:
   workflow_call:
@@ -55,9 +74,6 @@ on:
       scalr-token:
         description: 'Scalr service account token. Scoped to the one workspace, not the account.'
         required: true
-      tofu-encryption-passphrase:
-        description: 'Passphrase for OpenTofu state encryption. Without it this workflow refuses to run.'
-        required: true
       gh-admin-token:
         description: 'GitHub token the provider authenticates with. Needs admin:org, repo, workflow, delete_repo.'
         required: true
@@ -75,45 +91,11 @@ jobs:
   plan:
     name: Plan
     runs-on: ubuntu-latest
-    env:
-      # MUST be a multi-line HCL block. A bare passphrase here is not a
-      # "weaker" configuration — OpenTofu fails to parse it and the run dies.
-      # Verified 2026-08-24; an earlier single-line version of this file was
-      # invalid HCL for exactly that reason.
-      TF_ENCRYPTION: |
-        key_provider "pbkdf2" "main" {
-          passphrase = "${{ secrets.tofu-encryption-passphrase }}"
-        }
-        method "aes_gcm" "main" {
-          keys = key_provider.pbkdf2.main
-        }
-        state {
-          method   = method.aes_gcm.main
-          enforced = true
-        }
     defaults:
       run:
         working-directory: ${{ inputs.working-directory }}
     steps:
       - uses: actions/checkout@v7.0.1
-
-      - name: Refuse to run without an encryption passphrase
-        # THE MOST IMPORTANT STEP IN THIS FILE.
-        #
-        # `enforced = true` in the encryption block makes OpenTofu refuse to
-        # write plaintext — but only if the block is present at all. An empty
-        # or missing secret produces a TF_ENCRYPTION with an empty passphrase,
-        # which is a different failure and a much quieter one.
-        #
-        # Fail here, before init, where the message says what is wrong.
-        env:
-          PASSPHRASE: ${{ secrets.tofu-encryption-passphrase }}
-        run: |
-          if [ -z "$PASSPHRASE" ]; then
-            echo "::error::tofu-encryption-passphrase is empty or unset."
-            echo "::error::Refusing to continue: state would be written to Scalr in plaintext."
-            exit 1
-          fi
 
       - name: Set up OpenTofu
         uses: opentofu/setup-opentofu@v2.0.2
@@ -186,22 +168,6 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     environment: ${{ inputs.apply-environment }}
-    env:
-      # MUST be a multi-line HCL block. A bare passphrase here is not a
-      # "weaker" configuration — OpenTofu fails to parse it and the run dies.
-      # Verified 2026-08-24; an earlier single-line version of this file was
-      # invalid HCL for exactly that reason.
-      TF_ENCRYPTION: |
-        key_provider "pbkdf2" "main" {
-          passphrase = "${{ secrets.tofu-encryption-passphrase }}"
-        }
-        method "aes_gcm" "main" {
-          keys = key_provider.pbkdf2.main
-        }
-        state {
-          method   = method.aes_gcm.main
-          enforced = true
-        }
     defaults:
       run:
         working-directory: ${{ inputs.working-directory }}
