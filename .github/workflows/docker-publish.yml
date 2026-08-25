@@ -21,6 +21,13 @@ on:
         required: false
         type: string
         default: 'linux/amd64,linux/arm64'
+      image-name:
+        description: >-
+          Image name under ghcr.io. Defaults to the repository; set it when a
+          repository publishes more than one image (e.g. <owner>/<repo>-docs).
+        type: string
+        required: false
+        default: ''
       context:
         required: false
         type: string
@@ -76,7 +83,7 @@ jobs:
       attestations: write
     env:
       REGISTRY: ghcr.io
-      IMAGE_NAME: ${{ github.repository }}
+      IMAGE_NAME: ${{ inputs.image-name || github.repository }}
     steps:
       - uses: actions/checkout@v7.0.1
         with:
