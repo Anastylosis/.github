@@ -257,6 +257,12 @@ jobs:
         if: inputs.pre-release-checklist != ''
         env:
           CHECKLIST: ${{ inputs.pre-release-checklist }}
+        # Two surfaces, because the approval dialog itself cannot carry text:
+        # the job summary (full markdown, lower on the run page) and a notice
+        # annotation, which GitHub lists at the TOP of the run page — that is
+        # what the approver sees first. Annotations are single-line, so the
+        # checklist is flattened to one line there; the summary keeps the
+        # boxes.
         run: |
           {
             echo "## Release checklist"
@@ -265,6 +271,8 @@ jobs:
             echo ""
             printf '%s\n' "$CHECKLIST"
           } >> "$GITHUB_STEP_SUMMARY"
+          oneline=$(printf '%s' "$CHECKLIST" | sed -e 's/^[[:space:]]*- \[ \][[:space:]]*/• /' -e 's/^[[:space:]]*//' | tr -s '\n' ' ')
+          echo "::notice title=Release checklist — confirm before approving::${oneline}"
 
   release:
     name: Publish GitHub release
