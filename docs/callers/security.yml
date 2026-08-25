@@ -1,13 +1,8 @@
-# Optional security workflows. Both are opt-in per repo.
+# Optional security workflows. Opt-in per repo.
 #
 # dependency-review is worth having everywhere that takes pull requests: it
 # does nothing on a solo push-to-master repo, and is there so the first outside
 # contribution is checked on arrival.
-#
-# codeql earns its keep where the code parses input it does not control —
-# scraped HTML, uploaded files, anything attacker-influenced that becomes SQL,
-# a file path or XML. On a repo that only talks to its own database it is
-# mostly cost, so enable it deliberately rather than by default.
 
 name: Security
 
@@ -37,12 +32,3 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
-
-  codeql:
-    uses: Anastylosis/.github/.github/workflows/codeql.yml@v1
-    permissions:
-      security-events: write
-      contents: read
-      actions: read
-    with:
-      language: go

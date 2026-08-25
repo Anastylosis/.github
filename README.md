@@ -18,7 +18,9 @@ factored out so a change lands once.
 | `go-release.yml` | a repo's `release.yml` | build · SHA256SUMS · attestation · changelog · GitHub release, plus opt-in nfpm, AUR and Homebrew |
 | `docker-publish.yml` | a repo's `docker.yml` **and** the docker job in its `release.yml` | one workflow, `mode: dev` or `mode: release` |
 | `dependency-review.yml` | a repo's `dependency-review.yml` | opt-in; flags a PR introducing a known-vulnerable dependency |
-| `codeql.yml` | a repo's `codeql.yml` | opt-in; taint tracking, for code that parses input it does not control |
+
+CodeQL is GitHub's default setup, enabled per repo in Settings → Code security;
+there is deliberately no reusable workflow for it.
 
 Ready-to-copy caller files are in [`docs/callers/`](docs/callers/).
 
