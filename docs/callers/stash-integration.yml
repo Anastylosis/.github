@@ -1,0 +1,59 @@
+# Example: a Go repository whose integration tests are behind
+# `//go:build integration` and read STASH_URL. Drop this in as
+# .github/workflows/stash-integration.yml, or add the job to an existing
+# ci.yml.
+#
+# The default test-command is already `go test -tags=integration -count=1
+# ./...`, so a repo with that layout needs one input.
+
+name: Stash integration
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+concurrency:
+  group: stash-integration-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  stash:
+    uses: Anastylosis/.github/.github/workflows/stash-integration.yml@v1
+    # `contents: read` is the whole requirement. The harness needs no OIDC
+    # token, no checks:write and no secrets — unlike go-ci.yml, whose
+    # id-token: write catches everyone out.
+    permissions:
+      contents: read
+    with:
+      url-env-var: STASH_URL
+
+      # Optional, and the reason this job can fail. Without it the suite is
+      # free to skip every assertion on an empty library and still report
+      # green. Have the tests require the fixtures when this is set, and keep
+      # skipping when url-env-var is unset so `go test ./...` stays hermetic
+      # for a developer who has no Stash running.
+      seeded-env-var: STASH_SEEDED
+
+      # Stash runs unauthenticated here, so this is exported empty. Set it
+      # only if the client reads the variable unconditionally.
+      # api-key-env-var: STASH_API_KEY
+
+      # Custodian's integration tests carry no build tag — they are env-gated
+      # instead — so it overrides the default:
+      # test-command: go test -count=1 ./internal/stash/...
+
+# What the harness leaves running for the test-command:
+#
+#   * three scenes, one of which holds two files with the same oshash
+#   * one duplicate group at phash distance 0 (an mp4 and its mkv remux)
+#   * one performer and one studio
+#
+# The library is four clips of about two seconds each, generated with ffmpeg
+# on the runner; the scan and phash pass takes roughly five seconds. Nothing
+# is cached between runs, so each job starts from an empty database.

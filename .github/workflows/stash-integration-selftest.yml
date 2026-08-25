@@ -1,0 +1,81 @@
+name: Stash integration self-test
+
+# A reusable workflow that has never been run is a workflow that does not
+# work. This is the only caller of stash-integration.yml inside this
+# repository, and its job is to prove the harness end to end before a `v1`
+# retag ships it to Custodian and stash-go.
+#
+# It calls the workflow by LOCAL ref (`./.github/workflows/...`), so it tests
+# the commit being pushed rather than whatever `v1` currently points at, and
+# passes `harness-ref: ${{ github.sha }}` so the fixture and seed scripts come
+# from that same commit too.
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/stash-integration.yml'
+      - '.github/workflows/stash-integration-selftest.yml'
+      - 'scripts/stash-*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stash-selftest-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  harness:
+    uses: ./.github/workflows/stash-integration.yml
+    permissions:
+      contents: read
+    # No `secrets: inherit`: the harness talks to a container on the runner
+    # and pulls a public image. Nothing it does needs a credential.
+    with:
+      url-env-var: STASH_URL
+      seeded-env-var: STASH_SEEDED
+      harness-ref: ${{ github.sha }}
+      # This repository has no go.mod, so there is nothing for setup-go to
+      # read. Empty skips it.
+      go-version-file: ''
+      # The assertions are the point of this workflow: they check the exact
+      # properties the fixtures exist to create, so a change that quietly
+      # stops producing a multi-file scene or a phash pair turns this red
+      # instead of turning a downstream repo's tests into no-ops.
+      test-command: |
+        set -euo pipefail
+
+        if [ "${STASH_SEEDED:-}" != "1" ]; then
+          echo "FAIL seeded-env-var was not exported as 1"
+          exit 1
+        fi
+
+        response=$(curl -sS -m 30 -X POST -H 'Content-Type: application/json' \
+          -d '{"query":"{ findScenes(filter:{per_page:50}){ count scenes{ id files{ path } } } findDuplicateScenes(distance:0){ id } findPerformers(filter:{per_page:1}){ count } findStudios(filter:{per_page:1}){ count } }"}' \
+          "$STASH_URL/graphql")
+        echo "$response" | jq .
+
+        fail=0
+        check() {
+          if [ "$2" -ge "$3" ]; then
+            echo "ok   $1 = $2 (want >= $3)"
+          else
+            echo "FAIL $1 = $2 (want >= $3)"
+            fail=1
+          fi
+        }
+
+        check scenes \
+          "$(jq -r '.data.findScenes.count' <<<"$response")" 2
+        check multi-file-scenes \
+          "$(jq -r '[.data.findScenes.scenes[] | select((.files | length) >= 2)] | length' <<<"$response")" 1
+        check duplicate-groups \
+          "$(jq -r '.data.findDuplicateScenes | length' <<<"$response")" 1
+        check performers \
+          "$(jq -r '.data.findPerformers.count' <<<"$response")" 1
+        check studios \
+          "$(jq -r '.data.findStudios.count' <<<"$response")" 1
+
+        exit "$fail"

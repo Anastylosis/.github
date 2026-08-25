@@ -18,6 +18,7 @@ factored out so a change lands once.
 | `go-release.yml` | a repo's `release.yml` | build · SHA256SUMS · attestation · changelog · GitHub release, plus opt-in nfpm, AUR and Homebrew |
 | `docker-publish.yml` | a repo's `docker.yml` **and** the docker job in its `release.yml` | one workflow, `mode: dev` or `mode: release` |
 | `dependency-review.yml` | a repo's `dependency-review.yml` | opt-in; flags a PR introducing a known-vulnerable dependency |
+| `stash-integration.yml` | a manual "I tested it against my Stash" release gate | boots a throwaway Stash, seeds a fixture library, runs the caller's integration suite against it |
 
 CodeQL is GitHub's default setup, enabled per repo in Settings → Code security;
 there is deliberately no reusable workflow for it.
@@ -120,6 +121,44 @@ The tap has its own CI that runs `brew audit --online`, `brew install` and
 `brew test` on every formula, plus a weekly cron: formulae point at release
 assets, so a deleted or retagged release breaks installs without anything in
 either repository changing.
+
+## Stash integration
+
+`stash-integration.yml` starts `stashapp/stash` in a container, generates a
+four-clip library with ffmpeg, scans and phashes it, creates a performer and a
+studio, then runs the caller's test command with the endpoint in the
+environment. The caller needs `contents: read` and nothing else — no OIDC
+token, no secrets.
+
+| Input | Default | What it is for |
+|---|---|---|
+| `url-env-var` | *(required)* | Variable the tests read the URL from. Custodian uses `SFX_INT_STASH_URL`, stash-go uses `STASH_URL` |
+| `seeded-env-var` | `''` | Exported as `1`. The switch that lets tests **assert** the fixtures exist instead of skipping on an empty library |
+| `api-key-env-var` | `''` | Exported **empty** — Stash runs unauthenticated here (see below) |
+| `test-command` | `go test -tags=integration -count=1 ./...` | Run under `bash -c` |
+| `go-version-file` | `go.mod` | Empty skips `setup-go`, for a non-Go test command |
+| `stash-image` | `stashapp/stash:v0.31.1` | Pinned |
+| `stash-port` | `9999` | Published straight through to the container |
+| `harness-ref` | `v1` | Ref this repo's `scripts/stash-*.sh` are taken from |
+
+What the fixtures give the tests: **three scenes**, one of them a single scene
+holding **two files** with the same oshash; **one duplicate group** at phash
+distance 0 (an mp4 and its stream-copy mkv remux); **one performer and one
+studio**. Scan plus phash takes about five seconds.
+
+Two things worth knowing before adopting it:
+
+- **`seeded-env-var` is what makes the job able to fail.** A suite that skips
+  when it finds nothing passes just as happily against an empty Stash, and
+  that is the state most integration tests are written in. Gate the
+  assertions on this variable and keep the old skip when `url-env-var` is
+  unset, so a plain `go test ./...` stays hermetic.
+- **Stash boots headless via a GraphQL mutation, not env vars.** Contrary to
+  what the `STASH_*` variables suggest, v0.31.1 comes up in `SETUP` state with
+  an empty library and panics on `findScenes`; `scripts/stash-seed.sh` calls
+  `setup(input: {...})` to write the config and migrate. The same reason there
+  is no API key: `generateAPIKey` returns `""` until a username is configured,
+  and configuring one locks the instance to 401 before the key can be read.
 
 ## What deliberately stays per-repo
 

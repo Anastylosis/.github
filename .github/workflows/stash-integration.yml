@@ -1,0 +1,245 @@
+name: Stash integration (reusable)
+
+# Boots a throwaway Stash, fills it with a library shaped to exercise the
+# things Stash clients actually get wrong, and runs the caller's integration
+# suite against it.
+#
+# It exists because the alternative was a manual release gate: "I ran the
+# integration tests against my own Stash, honest." Custodian *mutates* a
+# library — merge, dedup, scan — and until this workflow nothing in CI had
+# ever pointed it at a live instance.
+#
+# Only actions/* plus `docker run`. The org's Actions allowlist is
+# `allowed_actions = selected` (infra/actions.tf); a third-party action here
+# would have to be allowlisted first, and none is needed.
+#
+# --- How Stash actually boots headless ------------------------------------
+# Not the way its docs imply. Started with STASH_DATABASE / STASH_STASH /
+# STASH_BLOBS_PATH and no config file, stash v0.31.1 logs "config file not
+# found. Assuming new system", serves GraphQL, and then sits in
+# `systemStatus.status == "SETUP"` with an empty library, no database path and
+# a nil repository — `findScenes` answers with a nil-pointer panic. Of those
+# variables only STASH_GENERATED and STASH_PORT took effect at all.
+#
+# Two things do work, and both are used here:
+#   * STASH_CONFIG_FILE picks the config path. The image defaults it to
+#     /root/.stash/config.yml, whose *directory does not exist*, so a plain
+#     `docker run` with any other env dies at startup with "could not write to
+#     provided config path". Pointing it at /root/ (which does exist) is what
+#     makes an unmounted container start at all.
+#   * The `setup(input: {...})` mutation writes that config, runs the schema
+#     migration and flips the instance to OK. That is the supported headless
+#     path; scripts/stash-seed.sh calls it.
+#
+# The library is mounted read-only: Stash writes its database, generated files
+# and blobs inside the container, and nothing needs to survive the job.
+
+on:
+  workflow_call:
+    inputs:
+      stash-image:
+        description: >-
+          Pinned like every other image in the org. A moving tag here would
+          mean an upstream release could change what "the fixtures scanned
+          cleanly" means, on a push that touched nothing.
+        required: false
+        type: string
+        default: 'stashapp/stash:v0.31.1'
+      stash-port:
+        description: >-
+          Port on the runner, published straight through to the container.
+          9999 is Stash's own default and nothing on ubuntu-latest wants it.
+        required: false
+        type: number
+        default: 9999
+      url-env-var:
+        description: >-
+          Name of the environment variable the caller's tests read the Stash
+          URL from. Deliberately not fixed: Custodian gates on
+          SFX_INT_STASH_URL, stash-go on STASH_URL, and neither is going to
+          rename its own convention to suit a shared workflow.
+        required: true
+        type: string
+      api-key-env-var:
+        description: >-
+          Optional. When set, this variable is exported EMPTY, because the
+          harness runs Stash unauthenticated and there is no way to end up
+          with a usable key: `generateAPIKey` returns "" until a username is
+          configured, and configuring one locks the instance to 401 before any
+          key can be read back. Export it anyway so a client that reads the
+          variable unconditionally sees a defined empty value rather than
+          whatever a developer left in the runner environment.
+        required: false
+        type: string
+        default: ''
+      seeded-env-var:
+        description: >-
+          Optional. When set, exported as "1". This is what lets a caller's
+          tests assert the fixtures are present instead of skipping on an
+          empty library — without it the suite passes against a Stash that has
+          nothing in it, which is a job that cannot go red.
+        required: false
+        type: string
+        default: ''
+      test-command:
+        description: 'Run under `bash -c`, so pipes, && and multi-line scripts all work.'
+        required: false
+        type: string
+        default: 'go test -tags=integration -count=1 ./...'
+      go-version-file:
+        description: >-
+          Passed to actions/setup-go. Empty skips the Go setup entirely, for a
+          caller whose test-command is not Go — the self-test in this repo is
+          exactly that.
+        required: false
+        type: string
+        default: 'go.mod'
+      harness-ref:
+        description: >-
+          Ref of Anastylosis/.github to take scripts/stash-*.sh from. A
+          reusable workflow cannot discover the ref it was itself called at —
+          `github.workflow_ref` describes the *caller* — so the scripts have to
+          be fetched by an explicit ref. Leave it at v1 unless you are testing
+          an unreleased change to the harness itself.
+        required: false
+        type: string
+        default: 'v1'
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    name: Stash integration
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - name: Fetch the harness scripts
+        uses: actions/checkout@v7.0.1
+        with:
+          repository: Anastylosis/.github
+          ref: ${{ inputs.harness-ref }}
+          sparse-checkout: scripts
+          path: .stash-harness
+
+      - name: Move the harness scripts out of the caller's tree
+        # A second checkout can only land inside the workspace, and leaving a
+        # foreign repository sitting in the caller's tree is the kind of thing
+        # that makes `go test ./...` or a lint rule report something baffling.
+        # Copy the two scripts to RUNNER_TEMP and put the tree back.
+        run: |
+          cp .stash-harness/scripts/stash-fixtures.sh .stash-harness/scripts/stash-seed.sh "$RUNNER_TEMP/"
+          rm -rf .stash-harness
+
+      - name: Set up Go
+        if: inputs.go-version-file != ''
+        uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: ${{ inputs.go-version-file }}
+
+      - name: Generate the fixture library
+        # ffmpeg ships on the ubuntu-latest runner image; nothing to install.
+        run: |
+          "$RUNNER_TEMP/stash-fixtures.sh" "$RUNNER_TEMP/stash-library"
+
+      - name: Start Stash
+        # Same shape as go-ci.yml's Postgres step: start detached, poll for a
+        # real answer rather than sleeping, and dump the container log before
+        # giving up so the failure says why. Stash answers /graphql within a
+        # second or two, but the poll is generous because a cold image pull on
+        # a busy runner is not.
+        env:
+          STASH_IMAGE: ${{ inputs.stash-image }}
+          PORT: ${{ inputs.stash-port }}
+        run: |
+          docker run -d --name ci-stash \
+            -e STASH_CONFIG_FILE=/root/stash-config.yml \
+            -e STASH_PORT="$PORT" \
+            -v "$RUNNER_TEMP/stash-library:/library:ro" \
+            -p "$PORT:$PORT" \
+            "$STASH_IMAGE"
+
+          url="http://localhost:$PORT"
+          for _ in $(seq 1 60); do
+            if curl -sf -m 3 -X POST -H 'Content-Type: application/json' \
+                 -d '{"query":"{ version { version } }"}' "$url/graphql" >/dev/null 2>&1; then
+              echo "Stash is ready at $url"
+              echo "STASH_BASE_URL=$url" >> "$GITHUB_ENV"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::Stash did not answer $url/graphql within 120s"
+          docker logs ci-stash
+          exit 1
+
+      - name: Configure, scan and seed
+        # Runs the setup mutation, scans, generates phashes and creates the
+        # performer and studio — each asynchronous job polled to completion
+        # rather than slept through. Measured at ~5s total on these four clips
+        # (two 21 kB, two 45 kB); if it ever creeps towards a minute, the scan
+        # is picking up something other than the mounted fixture library.
+        run: |
+          "$RUNNER_TEMP/stash-seed.sh" "$STASH_BASE_URL"
+
+      - name: Export the Stash endpoint to the test environment
+        # Variable *names* come from caller inputs and are written into
+        # $GITHUB_ENV, which is parsed as `NAME=value` — an input containing a
+        # newline could otherwise define arbitrary extra variables for every
+        # later step. Reject anything that is not a plain identifier.
+        env:
+          URL_ENV_VAR: ${{ inputs.url-env-var }}
+          API_KEY_ENV_VAR: ${{ inputs.api-key-env-var }}
+          SEEDED_ENV_VAR: ${{ inputs.seeded-env-var }}
+        run: |
+          check_name() {
+            case "$1" in
+              [A-Za-z_]*) ;;
+              *) echo "::error::'$1' is not a valid environment variable name"; exit 1 ;;
+            esac
+            case "$1" in
+              *[!A-Za-z0-9_]*) echo "::error::'$1' is not a valid environment variable name"; exit 1 ;;
+            esac
+          }
+
+          check_name "$URL_ENV_VAR"
+          echo "$URL_ENV_VAR=$STASH_BASE_URL" >> "$GITHUB_ENV"
+          echo "Exported $URL_ENV_VAR=$STASH_BASE_URL"
+
+          if [ -n "$API_KEY_ENV_VAR" ]; then
+            check_name "$API_KEY_ENV_VAR"
+            echo "$API_KEY_ENV_VAR=" >> "$GITHUB_ENV"
+            echo "Exported $API_KEY_ENV_VAR= (Stash runs unauthenticated here)"
+          fi
+
+          if [ -n "$SEEDED_ENV_VAR" ]; then
+            check_name "$SEEDED_ENV_VAR"
+            echo "$SEEDED_ENV_VAR=1" >> "$GITHUB_ENV"
+            echo "Exported $SEEDED_ENV_VAR=1"
+          fi
+
+      - name: Run the integration tests
+        # `bash -c` rather than dropping the input straight into the step body:
+        # the input is passed through the environment, so a quote or a `$` in
+        # it is data. `shell: bash` for pipefail — the default shell has none,
+        # so a failing command on the left of a pipe would score green.
+        shell: bash
+        env:
+          TEST_COMMAND: ${{ inputs.test-command }}
+        run: bash -c "$TEST_COMMAND"
+
+      - name: Stash container logs
+        # Any failure above — boot, scan, or the tests themselves — is usually
+        # explained by what Stash logged, and the container is gone with the
+        # runner a moment later.
+        if: failure()
+        run: |
+          echo "::group::docker logs ci-stash"
+          docker logs ci-stash 2>&1 || true
+          echo "::endgroup::"
+          echo "::group::fixture library"
+          ls -l "$RUNNER_TEMP/stash-library" || true
+          echo "::endgroup::"
