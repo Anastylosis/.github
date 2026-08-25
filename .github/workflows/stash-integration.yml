@@ -141,9 +141,30 @@ jobs:
           go-version-file: ${{ inputs.go-version-file }}
 
       - name: Generate the fixture library
-        # ffmpeg ships on the ubuntu-latest runner image; nothing to install.
+        # ffmpeg used to ship on the ubuntu-latest runner image and no longer
+        # does — this step failed on its first run for exactly that reason.
+        # Rather than `apt-get install ffmpeg` (a package download on a job
+        # that otherwise pulls one image), borrow the ffmpeg inside the Stash
+        # image, which is already being fetched a step later. It is also the
+        # same build Stash will decode these clips with when it phashes them.
+        #
+        # The wrapper mounts RUNNER_TEMP at its own path so the absolute paths
+        # the script passes mean the same thing inside the container, and runs
+        # as the runner user so the files are not left owned by root.
+        env:
+          STASH_IMAGE: ${{ inputs.stash-image }}
         run: |
-          "$RUNNER_TEMP/stash-fixtures.sh" "$RUNNER_TEMP/stash-library"
+          mkdir -p "$RUNNER_TEMP/bin"
+          cat > "$RUNNER_TEMP/bin/ffmpeg" <<EOF
+          #!/usr/bin/env bash
+          exec docker run --rm -u "\$(id -u):\$(id -g)" \
+            -v "$RUNNER_TEMP:$RUNNER_TEMP" -w "$RUNNER_TEMP" \
+            --entrypoint ffmpeg "$STASH_IMAGE" "\$@"
+          EOF
+          chmod +x "$RUNNER_TEMP/bin/ffmpeg"
+
+          FFMPEG="$RUNNER_TEMP/bin/ffmpeg" \
+            "$RUNNER_TEMP/stash-fixtures.sh" "$RUNNER_TEMP/stash-library"
 
       - name: Start Stash
         # Same shape as go-ci.yml's Postgres step: start detached, poll for a

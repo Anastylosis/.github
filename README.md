@@ -125,7 +125,8 @@ either repository changing.
 ## Stash integration
 
 `stash-integration.yml` starts `stashapp/stash` in a container, generates a
-four-clip library with ffmpeg, scans and phashes it, creates a performer and a
+four-clip library with the ffmpeg inside that image (the runner image no
+longer ships one), scans and phashes it, creates a performer and a
 studio, then runs the caller's test command with the endpoint in the
 environment. The caller needs `contents: read` and nothing else — no OIDC
 token, no secrets.

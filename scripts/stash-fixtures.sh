@@ -25,13 +25,19 @@
 # random input, so the pixels are fixed too.
 #
 # Usage: scripts/stash-fixtures.sh [library-dir]   (default ./stash-library)
+#
+# $FFMPEG overrides the binary. The GitHub runner image no longer ships
+# ffmpeg, so CI points this at a one-line wrapper around the ffmpeg inside the
+# Stash image it is about to start — same encoder Stash itself decodes with,
+# and no apt-get on a path that is otherwise network-free.
 
 set -euo pipefail
 
 LIB="${1:-./stash-library}"
+FFMPEG="${FFMPEG:-ffmpeg}"
 
-command -v ffmpeg >/dev/null 2>&1 || {
-  echo "stash-fixtures: ffmpeg not found on PATH" >&2
+command -v "$FFMPEG" >/dev/null 2>&1 || {
+  echo "stash-fixtures: ffmpeg not found ($FFMPEG); set \$FFMPEG to override" >&2
   exit 1
 }
 
@@ -43,7 +49,7 @@ mkdir -p "$LIB"
 # 2s is 20 frames per clip.
 BITEXACT=(-fflags +bitexact -flags +bitexact -map_metadata -1)
 ENCODE=("${BITEXACT[@]}" -c:v libx264 -preset ultrafast -pix_fmt yuv420p -g 10)
-FF=(ffmpeg -hide_banner -loglevel error -y)
+FF=("$FFMPEG" -hide_banner -loglevel error -y)
 
 # --- Fixture 1: multi-file scene -------------------------------------------
 # One encode, copied twice. Identical bytes => identical oshash => one scene
