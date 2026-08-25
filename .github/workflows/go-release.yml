@@ -601,13 +601,16 @@ jobs:
           cp formula.rb "tap/Formula/${FORMULA}.rb"
 
           cd tap
-          if git diff --quiet -- "Formula/${FORMULA}.rb"; then
+          # Stage first, then compare the index: `git diff --quiet` on a path
+          # ignores UNTRACKED files, so the very first formula for a project
+          # reported "already current" and was never pushed (FSS v1.30.1).
+          git add "Formula/${FORMULA}.rb"
+          if git diff --cached --quiet; then
             echo "Formula already current; nothing to push."
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add "Formula/${FORMULA}.rb"
           git commit -m "${FORMULA} ${GITHUB_REF#refs/tags/}"
 
           # One tap holds every project's formula, so two repos releasing at
