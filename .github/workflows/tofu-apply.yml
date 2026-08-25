@@ -21,6 +21,29 @@ name: OpenTofu plan and apply (reusable)
 # favourable one — secrets here are rotatable, scoped, revocable and audited,
 # and they are not in shell history or on a disk that can be stolen.
 #
+# The github provider itself authenticates one of two ways, chosen by which
+# secrets the caller passes:
+#
+#   preferred   gh-app-id / gh-app-installation-id / gh-app-pem — a GitHub
+#               App. Only the private key is long-lived, and it is not a
+#               credential by itself: each run exchanges it for a scoped,
+#               1-hour installation token, so a leaked run log or a stolen
+#               runner cannot yield a standing credential. Rotating it is
+#               "generate a new private key" in the App's settings; the old
+#               key is revoked the moment the new one is saved, with no token
+#               to hunt down and no rotation window where two are valid.
+#   fallback    gh-admin-token — a PAT or App-installation token handed to
+#               the provider directly. Kept for repos that have not created
+#               an App yet. Its problem is exactly what the App fixes: it is
+#               either a fine-grained PAT (expires, needing a human to notice
+#               and renew before CI silently starts failing) or a classic PAT
+#               (does not expire, so a leak is a standing credential until
+#               someone remembers it exists and revokes it).
+#
+# Both are optional inputs; exactly one must actually be supplied or the
+# "Configure GitHub provider credentials" step below fails the run rather
+# than silently authenticating as nothing.
+#
 # tofu-ci.yml is still the right workflow for a repo that only needs fmt and
 # validate. This one is for the repo that owns the state.
 #
@@ -29,7 +52,9 @@ name: OpenTofu plan and apply (reusable)
 # _dependabot_security_updates, github_issue_label and
 # github_organization_settings across seven PUBLIC repositories. No secret
 # values (those are set with `gh secret set` — infra GOTCHAS 4), no tokens
-# (the provider reads GITHUB_TOKEN from the environment), no private repos,
+# (the provider reads its credentials — GITHUB_TOKEN, or the three
+# GITHUB_APP_* variables for App auth — from the environment, never from a
+# literal in this repo), no private repos,
 # nothing marked sensitive. The single non-public value is a billing email
 # that already appears in every signed commit in the org.
 #
@@ -75,8 +100,28 @@ on:
         description: 'Scalr service account token. Scoped to the one workspace, not the account.'
         required: true
       gh-admin-token:
-        description: 'GitHub token the provider authenticates with. Needs admin:org, repo, workflow, delete_repo.'
-        required: true
+        description: >-
+          Fallback path. A GitHub token the provider authenticates with
+          directly — a fine-grained PAT, a classic PAT, or a pre-minted App
+          installation token. Needs admin:org, repo, workflow, delete_repo.
+          Prefer gh-app-id/gh-app-installation-id/gh-app-pem below: this
+          either expires without warning or never expires at all, and either
+          way it is one standing secret instead of a key exchanged for a
+          1-hour token on every run.
+        required: false
+      gh-app-id:
+        description: 'Preferred path. The GitHub App''s numeric ID.'
+        required: false
+      gh-app-installation-id:
+        description: 'Preferred path. The ID of the App''s installation on this org.'
+        required: false
+      gh-app-pem:
+        description: >-
+          Preferred path. The App's private key, PEM-encoded. This is the
+          only long-lived secret in the App path; the provider exchanges it
+          for a scoped installation token that expires in an hour, minted
+          fresh on every run.
+        required: false
 
 permissions:
   contents: read
@@ -119,6 +164,50 @@ jobs:
             '${{ inputs.scalr-hostname }}' "$SCALR_TOKEN" > "$creds"
           echo "TF_CLI_CONFIG_FILE=$creds" >> "$GITHUB_ENV"
 
+      - name: Configure GitHub provider credentials
+        # Preferred: a GitHub App. GITHUB_APP_PEM_FILE, despite the name,
+        # must be the PEM's CONTENT, not a path to it — that is what
+        # integrations/terraform-provider-github actually reads (verified
+        # against v6.13.0, the version `~> 6.6` in infra/versions.tf resolves
+        # to today: docs/resources and github/provider.go both treat it as
+        # key material, replacing literal `\n` with real newlines). A real
+        # newline works too, hence the heredoc rather than a single `echo`.
+        #
+        # Fallback: gh-admin-token straight into GITHUB_TOKEN, the same
+        # variable a human exports locally (infra/providers.tf) — this is
+        # what makes dropping gh-app-* later a one-line revert.
+        #
+        # Neither being set is a startup-time configuration mistake, not a
+        # missing-App-yet situation to authenticate around — fail loudly
+        # rather than let the provider fall through to `gh auth token` (which
+        # does not exist on a GitHub-hosted runner) or anonymous access
+        # (which cannot administer anything and would fail confusingly deep
+        # into the plan instead of here).
+        env:
+          GH_APP_ID: ${{ secrets.gh-app-id }}
+          GH_APP_INSTALLATION_ID: ${{ secrets.gh-app-installation-id }}
+          GH_APP_PEM: ${{ secrets.gh-app-pem }}
+          GH_ADMIN_TOKEN: ${{ secrets.gh-admin-token }}
+        run: |
+          if [ -n "$GH_APP_PEM" ]; then
+            if [ -z "$GH_APP_ID" ] || [ -z "$GH_APP_INSTALLATION_ID" ]; then
+              echo '::error::gh-app-pem is set but gh-app-id or gh-app-installation-id is missing.'
+              exit 1
+            fi
+            {
+              echo "GITHUB_APP_ID=$GH_APP_ID"
+              echo "GITHUB_APP_INSTALLATION_ID=$GH_APP_INSTALLATION_ID"
+              echo "GITHUB_APP_PEM_FILE<<GITHUB_APP_PEM_FILE_EOF"
+              echo "$GH_APP_PEM"
+              echo "GITHUB_APP_PEM_FILE_EOF"
+            } >> "$GITHUB_ENV"
+          elif [ -n "$GH_ADMIN_TOKEN" ]; then
+            echo "GITHUB_TOKEN=$GH_ADMIN_TOKEN" >> "$GITHUB_ENV"
+          else
+            echo '::error::Neither gh-app-pem nor gh-admin-token was provided; the github provider has no credentials.'
+            exit 1
+          fi
+
       - name: Initialise
         run: tofu init -input=false
 
@@ -126,10 +215,12 @@ jobs:
         # -lock-timeout so a stale lock waits rather than failing instantly.
         # -detailed-exitcode is NOT used: 2 means "changes present", which is
         # the normal case here and must not read as failure.
+        #
+        # No GITHUB_TOKEN/GITHUB_APP_* here: "Configure GitHub provider
+        # credentials" above already put whichever one applies in
+        # $GITHUB_ENV for every step in this job.
         run: |
           tofu plan -no-color -input=false -lock-timeout=5m | tee "$RUNNER_TEMP/plan.txt"
-        env:
-          GITHUB_TOKEN: ${{ secrets.gh-admin-token }}
 
       - name: Publish the plan to the job summary
         # So the diff is readable from the pull request without opening logs.
@@ -190,12 +281,43 @@ jobs:
             '${{ inputs.scalr-hostname }}' "$SCALR_TOKEN" > "$creds"
           echo "TF_CLI_CONFIG_FILE=$creds" >> "$GITHUB_ENV"
 
+      - name: Configure GitHub provider credentials
+        # See the identical step in the plan job above for why
+        # GITHUB_APP_PEM_FILE gets the PEM's content rather than a path, and
+        # why a missing credential fails here instead of falling through.
+        env:
+          GH_APP_ID: ${{ secrets.gh-app-id }}
+          GH_APP_INSTALLATION_ID: ${{ secrets.gh-app-installation-id }}
+          GH_APP_PEM: ${{ secrets.gh-app-pem }}
+          GH_ADMIN_TOKEN: ${{ secrets.gh-admin-token }}
+        run: |
+          if [ -n "$GH_APP_PEM" ]; then
+            if [ -z "$GH_APP_ID" ] || [ -z "$GH_APP_INSTALLATION_ID" ]; then
+              echo '::error::gh-app-pem is set but gh-app-id or gh-app-installation-id is missing.'
+              exit 1
+            fi
+            {
+              echo "GITHUB_APP_ID=$GH_APP_ID"
+              echo "GITHUB_APP_INSTALLATION_ID=$GH_APP_INSTALLATION_ID"
+              echo "GITHUB_APP_PEM_FILE<<GITHUB_APP_PEM_FILE_EOF"
+              echo "$GH_APP_PEM"
+              echo "GITHUB_APP_PEM_FILE_EOF"
+            } >> "$GITHUB_ENV"
+          elif [ -n "$GH_ADMIN_TOKEN" ]; then
+            echo "GITHUB_TOKEN=$GH_ADMIN_TOKEN" >> "$GITHUB_ENV"
+          else
+            echo '::error::Neither gh-app-pem nor gh-admin-token was provided; the github provider has no credentials.'
+            exit 1
+          fi
+
       - name: Initialise
         run: tofu init -input=false
 
       - name: Apply
         # No -auto-approve alternative exists for a non-interactive run, so the
         # approval that matters is the environment reviewer above, not a flag.
+        #
+        # No GITHUB_TOKEN/GITHUB_APP_* here: "Configure GitHub provider
+        # credentials" above already put whichever one applies in
+        # $GITHUB_ENV for every step in this job.
         run: tofu apply -auto-approve -input=false -lock-timeout=5m
-        env:
-          GITHUB_TOKEN: ${{ secrets.gh-admin-token }}
