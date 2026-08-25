@@ -77,6 +77,15 @@ on:
         required: false
         type: string
         default: ''
+      pre-release-checklist:
+        description: >-
+          Markdown checklist written to the build job's step summary, so it is
+          on screen when the approver opens the run to review the deployment.
+          Written in the imperative — these are instructions. The matching
+          after-the-fact attestation is `pre-release-notice`.
+        required: false
+        type: string
+        default: ''
 
       discussion-category:
         description: >-
@@ -243,6 +252,19 @@ jobs:
           name: release-binaries
           path: dist/
           retention-days: 7
+
+      - name: Release checklist
+        if: inputs.pre-release-checklist != ''
+        env:
+          CHECKLIST: ${{ inputs.pre-release-checklist }}
+        run: |
+          {
+            echo "## Release checklist"
+            echo ""
+            echo "This run is paused for approval. Confirm every item before approving."
+            echo ""
+            printf '%s\n' "$CHECKLIST"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   release:
     name: Publish GitHub release
