@@ -31,8 +31,10 @@ name: Stash integration (reusable)
 #     migration and flips the instance to OK. That is the supported headless
 #     path; scripts/stash-seed.sh calls it.
 #
-# The library is mounted read-only: Stash writes its database, generated files
-# and blobs inside the container, and nothing needs to survive the job.
+# The library is mounted read-only by default: Stash writes its database,
+# generated files and blobs inside the container, and nothing needs to survive
+# the job. A caller whose tests move or delete files sets `library-writable`
+# to mount it `:rw` instead.
 
 on:
   workflow_call:
@@ -104,6 +106,17 @@ on:
         required: false
         type: string
         default: 'v1'
+      library-writable:
+        description: >-
+          Mounts the fixture library `:rw` instead of `:ro`. A caller whose
+          tests only read the library (findScenes, stats, duplicate lookups)
+          never needs this; one whose tests move or delete files — merge,
+          dedup, scan — does. Stays read-only by default so a caller that
+          forgets to ask for it fails loudly instead of quietly corrupting the
+          fixtures for whichever job runs next.
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -175,11 +188,12 @@ jobs:
         env:
           STASH_IMAGE: ${{ inputs.stash-image }}
           PORT: ${{ inputs.stash-port }}
+          LIBRARY_MODE: ${{ inputs.library-writable && 'rw' || 'ro' }}
         run: |
           docker run -d --name ci-stash \
             -e STASH_CONFIG_FILE=/root/stash-config.yml \
             -e STASH_PORT="$PORT" \
-            -v "$RUNNER_TEMP/stash-library:/library:ro" \
+            -v "$RUNNER_TEMP/stash-library:/library:$LIBRARY_MODE" \
             -p "$PORT:$PORT" \
             "$STASH_IMAGE"
 

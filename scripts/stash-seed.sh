@@ -159,13 +159,38 @@ if [ "$(gql '{ findStudios(filter: {per_page: 1}) { count } }' | jq -r '.data.fi
   gql 'mutation { studioCreate(input: {name: "CI Fixture Studio"}) { id } }' >/dev/null
 fi
 
+# The phash-duplicate pair also needs to agree on a stash-box id, so
+# Custodian's stash_id evidence generator has something to cluster: a
+# fabricated stashdb.org UUID on both dupe-source.mp4 and dupe-remux.mkv.
+# Scene ids are not stable across a re-seed, so the pair is found by path
+# rather than assumed to be scenes 2 and 3; skipped per-scene once already
+# set, so a re-run does not just re-send the same mutation.
+STASHDB_ENDPOINT="https://stashdb.org/graphql"
+STASHDB_ID="00000000-0000-4000-8000-00000000c1a5"
+for path in dupe-source.mp4 dupe-remux.mkv; do
+  scene_id=$(gql 'query($v: String!) { findScenes(scene_filter: {path: {value: $v, modifier: INCLUDES}}) { scenes { id stash_ids { endpoint stash_id } } } }' \
+    "$(jq -nc --arg v "$path" '{v: $v}')" | \
+    jq -r --arg ep "$STASHDB_ENDPOINT" --arg id "$STASHDB_ID" '
+      (.data.findScenes.scenes[0] // {}) as $s
+      | (($s.stash_ids // []) | map(select(.endpoint == $ep and .stash_id == $id)) | length) as $already
+      | if $already == 0 then ($s.id // empty) else empty end')
+  if [ -n "$scene_id" ]; then
+    gql 'mutation($i: SceneUpdateInput!) { sceneUpdate(input: $i) { id } }' \
+      "$(jq -nc --arg id "$scene_id" --arg ep "$STASHDB_ENDPOINT" --arg sid "$STASHDB_ID" \
+        '{i: {id: $id, stash_ids: [{endpoint: $ep, stash_id: $sid}]}}')" >/dev/null
+    echo "stash-seed: set shared stash_id on scene $scene_id ($path)"
+  fi
+done
+
 # --- 5. Report -------------------------------------------------------------
 gql '{
   stats { scene_count performer_count studio_count }
   findDuplicateScenes(distance: 0) { id }
+  sharedStashID: findScenes(scene_filter: {stash_id_endpoint: {modifier: NOT_NULL}}) { count }
 }' | jq -c '{
   scenes: .data.stats.scene_count,
   performers: .data.stats.performer_count,
   studios: .data.stats.studio_count,
-  duplicate_groups: (.data.findDuplicateScenes | length)
+  duplicate_groups: (.data.findDuplicateScenes | length),
+  shared_stash_id_scenes: .data.sharedStashID.count
 }'
