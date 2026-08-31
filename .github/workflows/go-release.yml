@@ -281,10 +281,10 @@ jobs:
           done
 
       - name: Build .deb and .rpm packages
-        if: inputs.artifacts && inputs.nfpm
-        # Still cross-compiles linux/arm64 with CGO disabled, native-artifacts
-        # notwithstanding — no current caller pairs nfpm with a cgo module, so
-        # that combination is left unsolved rather than half-fixed here.
+        # Under native-artifacts, packaging happens in the build-native linux
+        # jobs instead — this loop cross-compiles with CGO disabled, which a
+        # cgo module can never pass.
+        if: inputs.artifacts && inputs.nfpm && !inputs.native-artifacts
         env:
           NAME: ${{ inputs.binary-name }}
           MAIN_PACKAGE: ${{ inputs.main-package }}
@@ -309,10 +309,9 @@ jobs:
           done
 
       - name: Upload release artifacts
-        # Under native-artifacts this job's dist/ holds only what nfpm put
-        # there (or nothing, if nfpm is also off) — the platform binaries
-        # come from the build-native matrix jobs instead.
-        if: inputs.artifacts && (!inputs.native-artifacts || inputs.nfpm)
+        # Under native-artifacts everything — binaries and nfpm packages —
+        # comes from the build-native matrix jobs instead.
+        if: inputs.artifacts && !inputs.native-artifacts
         uses: actions/upload-artifact@v7.0.1
         with:
           name: release-binaries
@@ -421,6 +420,8 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           WINDOWS_GUI: ${{ inputs.windows-gui }}
+          NFPM: ${{ inputs.nfpm }}
+          NFPM_VERSION: ${{ inputs.nfpm-version }}
         # windows-latest defaults to pwsh; this script is bash.
         shell: bash
         run: |
@@ -441,6 +442,14 @@ jobs:
 
           echo "Building ${GOOS}/${GOARCH} natively..."
           go build -ldflags "$LDFLAGS" -o "dist/${binary}" "$MAIN_PACKAGE"
+
+          # nfpm packages here, from the natively built binary, because the
+          # build job's cross-compiling loop can never produce a cgo one.
+          if [ "$GOOS" = "linux" ] && [ "$NFPM" = "true" ]; then
+            go install "github.com/goreleaser/nfpm/v2/cmd/nfpm@${NFPM_VERSION}"
+            GOARCH=$GOARCH VERSION="${VERSION#v}" nfpm package --packager deb --target dist/
+            GOARCH=$GOARCH VERSION="${VERSION#v}" nfpm package --packager rpm --target dist/
+          fi
 
           cd dist
           if [ "$GOOS" = "windows" ]; then
