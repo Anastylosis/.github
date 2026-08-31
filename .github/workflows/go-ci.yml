@@ -24,6 +24,17 @@ on:
         required: false
         type: string
         default: '.'
+      apt-packages:
+        description: >-
+          Space-separated Debian packages installed with apt before any job
+          that builds the module natively on ubuntu-latest. Empty (the
+          default) skips the step and changes nothing for existing callers.
+          Earned by a Fyne/OpenGL desktop consumer: the stock runner image
+          ships no X11 or GL headers, so cgo compilation fails before a
+          single test runs unless something apt-get installs them first.
+        required: false
+        type: string
+        default: ''
 
       # --- Test job -----------------------------------------------------
       test-flags:
@@ -134,7 +145,10 @@ on:
         description: >-
           JSON array of {goos, goarch} to cross-compile. linux/amd64 is
           deliberately absent: the test job runs on ubuntu-latest and does
-          `go build ./...` natively, so it is already gated.
+          `go build ./...` natively, so it is already gated. Set to '[]' to
+          disable the job outright: cross-compiling forces CGO_ENABLED=0, so
+          a cgo-only project (a Fyne/OpenGL desktop app, say) can never pass
+          it — build per-OS natively via platform-tests instead.
         required: false
         type: string
         default: >-
@@ -172,6 +186,17 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v7.0.1
+
+      - name: Install apt packages
+        # Inputs come in as env rather than being interpolated into the
+        # script body, per the Test with coverage step below.
+        if: inputs.apt-packages != ''
+        env:
+          APT_PACKAGES: ${{ inputs.apt-packages }}
+        run: |
+          sudo apt-get update -qq
+          # shellcheck disable=SC2086
+          sudo apt-get install -y --no-install-recommends $APT_PACKAGES
 
       - name: Set up Go
         uses: actions/setup-go@v7.0.0
@@ -360,6 +385,17 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
 
+      - name: Install apt packages
+        # Must run before the namespace closes network access below, and
+        # is otherwise the same as the Test job's step of the same name.
+        if: inputs.apt-packages != ''
+        env:
+          APT_PACKAGES: ${{ inputs.apt-packages }}
+        run: |
+          sudo apt-get update -qq
+          # shellcheck disable=SC2086
+          sudo apt-get install -y --no-install-recommends $APT_PACKAGES
+
       - name: Set up Go
         uses: actions/setup-go@v7.0.0
         with:
@@ -407,6 +443,15 @@ jobs:
       checks: write
     steps:
       - uses: actions/checkout@v7.0.1
+
+      - name: Install apt packages
+        if: inputs.apt-packages != ''
+        env:
+          APT_PACKAGES: ${{ inputs.apt-packages }}
+        run: |
+          sudo apt-get update -qq
+          # shellcheck disable=SC2086
+          sudo apt-get install -y --no-install-recommends $APT_PACKAGES
 
       - name: Set up Go
         uses: actions/setup-go@v7.0.0
@@ -471,6 +516,10 @@ jobs:
 
   cross-build:
     name: Cross-build (${{ matrix.goos }}/${{ matrix.goarch }})
+    # Evaluated before the matrix is planned, unlike an empty
+    # cross-build-targets array — fromJSON('[]') on strategy.matrix.include
+    # fails the job at planning time instead of skipping it.
+    if: inputs.cross-build-targets != '[]'
     runs-on: ubuntu-latest
     strategy:
       matrix:
