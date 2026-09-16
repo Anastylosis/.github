@@ -683,7 +683,7 @@ jobs:
           echo "::endgroup::"
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v3.0.2
+        uses: softprops/action-gh-release@v3.0.3
         with:
           # Empty for a library: dist/ does not exist, and a glob matching
           # nothing would fail the upload rather than skip it.
