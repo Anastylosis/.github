@@ -88,6 +88,18 @@ on:
         required: false
         type: string
         default: 'v2.46.3'
+      channel-var:
+        description: >-
+          Go variable stamped with the channel each artifact ships through, e.g.
+          `main.channel`: `release` for the archives, `deb` for the .deb, `rpm`
+          for the .rpm. A binary can then say how it was shipped instead of the
+          reader guessing from its path — which decides whether an update should
+          come from the tool itself or from a package manager. Stamping the .deb
+          and the .rpm differently costs one extra compile per arch, so it only
+          happens when this is set. Empty (the default) changes nothing.
+        required: false
+        type: string
+        default: ''
 
       environment-name:
         description: >-
@@ -243,11 +255,15 @@ jobs:
           MAIN_PACKAGE: ${{ inputs.main-package }}
           PLATFORMS: ${{ inputs.platforms }}
           WINDOWS_GUI: ${{ inputs.windows-gui }}
+          CHANNEL_VAR: ${{ inputs.channel-var }}
         run: |
           VERSION="${GITHUB_REF#refs/tags/}"
           COMMIT="${GITHUB_SHA::8}"
           DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           LDFLAGS="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${DATE}"
+          if [ -n "$CHANNEL_VAR" ]; then
+            LDFLAGS="${LDFLAGS} -X ${CHANNEL_VAR}=release"
+          fi
           mkdir -p dist
 
           # Unquoted on purpose — PLATFORMS is a space-separated list.
@@ -289,6 +305,7 @@ jobs:
           NAME: ${{ inputs.binary-name }}
           MAIN_PACKAGE: ${{ inputs.main-package }}
           NFPM_VERSION: ${{ inputs.nfpm-version }}
+          CHANNEL_VAR: ${{ inputs.channel-var }}
         run: |
           VERSION="${GITHUB_REF#refs/tags/v}"
           COMMIT="${GITHUB_SHA::8}"
@@ -301,10 +318,19 @@ jobs:
           go install "github.com/goreleaser/nfpm/v2/cmd/nfpm@${NFPM_VERSION}"
 
           for arch in amd64 arm64; do
-            echo "Packaging linux/${arch}..."
-            GOOS=linux GOARCH=$arch go build -ldflags "$LDFLAGS" -o "dist/${NAME}" "$MAIN_PACKAGE"
-            GOARCH=$arch VERSION=$VERSION nfpm package --packager deb --target dist/
-            GOARCH=$arch VERSION=$VERSION nfpm package --packager rpm --target dist/
+            for packager in deb rpm; do
+              echo "Packaging linux/${arch} (${packager})..."
+              # Without a channel var the two packagers share one build, exactly
+              # as before; with one they each need their own stamp.
+              if [ -n "$CHANNEL_VAR" ] || [ ! -f "dist/${NAME}" ]; then
+                ldflags="$LDFLAGS"
+                if [ -n "$CHANNEL_VAR" ]; then
+                  ldflags="${ldflags} -X ${CHANNEL_VAR}=${packager}"
+                fi
+                GOOS=linux GOARCH=$arch go build -ldflags "$ldflags" -o "dist/${NAME}" "$MAIN_PACKAGE"
+              fi
+              GOARCH=$arch VERSION=$VERSION nfpm package --packager "$packager" --target dist/
+            done
             rm "dist/${NAME}"
           done
 
@@ -422,6 +448,7 @@ jobs:
           WINDOWS_GUI: ${{ inputs.windows-gui }}
           NFPM: ${{ inputs.nfpm }}
           NFPM_VERSION: ${{ inputs.nfpm-version }}
+          CHANNEL_VAR: ${{ inputs.channel-var }}
         # windows-latest defaults to pwsh; this script is bash.
         shell: bash
         run: |
@@ -429,6 +456,10 @@ jobs:
           COMMIT="${GITHUB_SHA::8}"
           DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           LDFLAGS="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${DATE}"
+          ARCHIVE_LDFLAGS="$LDFLAGS"
+          if [ -n "$CHANNEL_VAR" ]; then
+            ARCHIVE_LDFLAGS="${ARCHIVE_LDFLAGS} -X ${CHANNEL_VAR}=release"
+          fi
           mkdir -p dist
 
           binary="$NAME"
@@ -441,14 +472,24 @@ jobs:
           fi
 
           echo "Building ${GOOS}/${GOARCH} natively..."
-          go build -ldflags "$LDFLAGS" -o "dist/${binary}" "$MAIN_PACKAGE"
+          go build -ldflags "$ARCHIVE_LDFLAGS" -o "dist/${binary}" "$MAIN_PACKAGE"
 
           # nfpm packages here, from the natively built binary, because the
           # build job's cross-compiling loop can never produce a cgo one.
           if [ "$GOOS" = "linux" ] && [ "$NFPM" = "true" ]; then
             go install "github.com/goreleaser/nfpm/v2/cmd/nfpm@${NFPM_VERSION}"
-            GOARCH=$GOARCH VERSION="${VERSION#v}" nfpm package --packager deb --target dist/
-            GOARCH=$GOARCH VERSION="${VERSION#v}" nfpm package --packager rpm --target dist/
+            for packager in deb rpm; do
+              # The archive binary is stamped `release`, so a package needs its
+              # own build to say `deb` or `rpm`; without a channel var the
+              # archive binary is packaged as it always was.
+              if [ -n "$CHANNEL_VAR" ]; then
+                go build -ldflags "${LDFLAGS} -X ${CHANNEL_VAR}=${packager}" -o "dist/${binary}" "$MAIN_PACKAGE"
+              fi
+              GOARCH=$GOARCH VERSION="${VERSION#v}" nfpm package --packager "$packager" --target dist/
+            done
+            if [ -n "$CHANNEL_VAR" ]; then
+              go build -ldflags "$ARCHIVE_LDFLAGS" -o "dist/${binary}" "$MAIN_PACKAGE"
+            fi
           fi
 
           cd dist
