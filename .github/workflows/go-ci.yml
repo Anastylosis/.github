@@ -301,7 +301,7 @@ jobs:
 
       - name: Upload coverage to Codecov
         if: inputs.codecov
-        uses: codecov/codecov-action@v7.0.0
+        uses: codecov/codecov-action@v7.1.1
         with:
           use_oidc: true
           files: coverage.out
@@ -314,7 +314,7 @@ jobs:
         # suite still reports *which* tests failed — that is the whole point of
         # the JUnit upload, and with pipefail the test step now does fail.
         if: ${{ inputs.codecov && !cancelled() }}
-        uses: codecov/codecov-action@v7.0.0
+        uses: codecov/codecov-action@v7.1.1
         with:
           use_oidc: true
           report_type: test_results
