@@ -15,7 +15,7 @@ factored out so a change lands once.
 | `tofu-ci.yml` | an OpenTofu/Terraform repo's `ci.yml` | `fmt -check` and `validate`; deliberately no `plan` |
 | `python-ci.yml` | a Python repo's `ci.yml` | lint · test · informational pip-audit, plus opt-in offline isolation |
 | `go-ci.yml` | a repo's `ci.yml` | test · lint · vulncheck · cross-build, plus opt-in platform, offline-isolation and fuzz jobs; `test-shards` splits the test job across parallel runners |
-| `go-release.yml` | a repo's `release.yml` | build · SHA256SUMS · attestation · changelog · GitHub release, plus opt-in nfpm, AUR and Homebrew |
+| `go-release.yml` | a repo's `release.yml` | build · SHA256SUMS · attestation · changelog · GitHub release, plus opt-in nfpm, AUR and Homebrew; `ci-workflow` skips the test re-run when CI already passed on the tagged commit |
 | `docker-publish.yml` | a repo's `docker.yml` **and** the docker job in its `release.yml` | one workflow, `mode: dev` or `mode: release` |
 | `dependency-review.yml` | a repo's `dependency-review.yml` | opt-in; flags a PR introducing a known-vulnerable dependency |
 | `stash-integration.yml` | a manual "I tested it against my Stash" release gate | boots a throwaway Stash, seeds a fixture library, runs the caller's integration suite against it |

@@ -222,6 +222,29 @@ jobs:
         uses: actions/setup-go@v7.0.0
         with:
           go-version-file: go.mod
+          # Replaced below: setup-go's cache has no fallback key.
+          cache: false
+
+      - name: Locate Go caches
+        id: go-cache
+        shell: bash
+        run: |
+          {
+            echo "build=$(go env GOCACHE)"
+            echo "mod=$(go env GOMODCACHE)"
+            echo "version=$(go env GOVERSION)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Restore Go caches
+        # A go.sum change restores the previous entry instead of starting cold.
+        uses: actions/cache@v6.1.0
+        with:
+          path: |
+            ${{ steps.go-cache.outputs.build }}
+            ${{ steps.go-cache.outputs.mod }}
+          key: go-${{ runner.os }}-${{ runner.arch }}-${{ steps.go-cache.outputs.version }}-race-${{ matrix.shard }}-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            go-${{ runner.os }}-${{ runner.arch }}-${{ steps.go-cache.outputs.version }}-race-${{ matrix.shard }}-
 
       - name: Start Postgres
         if: inputs.postgres-image != ''
@@ -498,6 +521,29 @@ jobs:
         uses: actions/setup-go@v7.0.0
         with:
           go-version-file: go.mod
+          # Replaced below: setup-go's cache has no fallback key.
+          cache: false
+
+      - name: Locate Go caches
+        id: go-cache
+        shell: bash
+        run: |
+          {
+            echo "build=$(go env GOCACHE)"
+            echo "mod=$(go env GOMODCACHE)"
+            echo "version=$(go env GOVERSION)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Restore Go caches
+        # A go.sum change restores the previous entry instead of starting cold.
+        uses: actions/cache@v6.1.0
+        with:
+          path: |
+            ${{ steps.go-cache.outputs.build }}
+            ${{ steps.go-cache.outputs.mod }}
+          key: go-${{ runner.os }}-${{ runner.arch }}-${{ steps.go-cache.outputs.version }}-plain-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            go-${{ runner.os }}-${{ runner.arch }}-${{ steps.go-cache.outputs.version }}-plain-
 
       - name: Build
         run: go build ./...
@@ -533,6 +579,29 @@ jobs:
         uses: actions/setup-go@v7.0.0
         with:
           go-version-file: go.mod
+          # Replaced below: setup-go's cache has no fallback key.
+          cache: false
+
+      - name: Locate Go caches
+        id: go-cache
+        shell: bash
+        run: |
+          {
+            echo "build=$(go env GOCACHE)"
+            echo "mod=$(go env GOMODCACHE)"
+            echo "version=$(go env GOVERSION)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Restore Go caches
+        # A go.sum change restores the previous entry instead of starting cold.
+        uses: actions/cache@v6.1.0
+        with:
+          path: |
+            ${{ steps.go-cache.outputs.build }}
+            ${{ steps.go-cache.outputs.mod }}
+          key: go-${{ runner.os }}-${{ runner.arch }}-${{ steps.go-cache.outputs.version }}-plain-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            go-${{ runner.os }}-${{ runner.arch }}-${{ steps.go-cache.outputs.version }}-plain-
 
       - name: Prime the module and build caches
         # Everything the suite needs has to be on disk before the namespace

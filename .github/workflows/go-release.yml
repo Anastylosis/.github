@@ -54,6 +54,15 @@ on:
         required: false
         type: string
         default: ''
+      ci-workflow:
+        description: >-
+          The caller's CI workflow file (e.g. ci.yml). When set and a run of
+          it already succeeded on the tagged commit, the build job skips its
+          own test run. Any doubt (no run, still running, API unreadable)
+          runs the tests as before.
+        required: false
+        type: string
+        default: ''
       native-artifacts:
         description: >-
           Build each platform binary on a runner native to its GOOS/GOARCH
@@ -242,8 +251,56 @@ jobs:
         uses: actions/setup-go@v7.0.0
         with:
           go-version-file: go.mod
+          # Replaced below: setup-go's cache has no fallback key.
+          cache: false
+
+      - name: Locate Go caches
+        id: go-cache
+        shell: bash
+        run: |
+          {
+            echo "build=$(go env GOCACHE)"
+            echo "mod=$(go env GOMODCACHE)"
+            echo "version=$(go env GOVERSION)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Restore Go caches
+        # Restore only: a tag run's saves are invisible to later tags, but it
+        # can read CI's master caches, which share these keys.
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: |
+            ${{ steps.go-cache.outputs.build }}
+            ${{ steps.go-cache.outputs.mod }}
+          key: go-${{ runner.os }}-${{ runner.arch }}-${{ steps.go-cache.outputs.version }}-race-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            go-${{ runner.os }}-${{ runner.arch }}-${{ steps.go-cache.outputs.version }}-race-
+
+      - name: Check CI on this commit
+        id: ci
+        if: inputs.ci-workflow != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CI_WORKFLOW: ${{ inputs.ci-workflow }}
+        run: |
+          path="repos/${GITHUB_REPOSITORY}/actions/workflows/${CI_WORKFLOW}/runs?head_sha=${GITHUB_SHA}&status=success&per_page=1"
+          # The token may lack actions: read (callers aren't asked for it);
+          # a public repo still answers anonymously.
+          n=""
+          if body=$(gh api "$path" 2>/dev/null); then
+            n=$(jq -r '.total_count // empty' <<<"$body")
+          elif body=$(curl -fsS "${GITHUB_API_URL}/${path}" 2>/dev/null); then
+            n=$(jq -r '.total_count // empty' <<<"$body")
+          fi
+          if [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -gt 0 ]; then
+            echo "passed=true" >> "$GITHUB_OUTPUT"
+            echo "${CI_WORKFLOW} passed on ${GITHUB_SHA}; skipping the test re-run."
+          else
+            echo "No passing ${CI_WORKFLOW} run found for ${GITHUB_SHA}; running tests."
+          fi
 
       - name: Run tests
+        if: steps.ci.outputs.passed != 'true'
         run: go test -race -count=1 ./...
 
       - name: Build binaries
@@ -435,6 +492,30 @@ jobs:
         uses: actions/setup-go@v7.0.0
         with:
           go-version-file: go.mod
+          # Replaced below: setup-go's cache has no fallback key.
+          cache: false
+
+      - name: Locate Go caches
+        id: go-cache
+        shell: bash
+        run: |
+          {
+            echo "build=$(go env GOCACHE)"
+            echo "mod=$(go env GOMODCACHE)"
+            echo "version=$(go env GOVERSION)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Restore Go caches
+        # Restore only: a tag run's saves are invisible to later tags, but it
+        # can read CI's master caches, which share these keys.
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: |
+            ${{ steps.go-cache.outputs.build }}
+            ${{ steps.go-cache.outputs.mod }}
+          key: go-${{ runner.os }}-${{ runner.arch }}-${{ steps.go-cache.outputs.version }}-plain-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            go-${{ runner.os }}-${{ runner.arch }}-${{ steps.go-cache.outputs.version }}-plain-
 
       - name: Build and package
         # Same archive naming, packaging convention and version stamping as
