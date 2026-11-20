@@ -922,7 +922,9 @@ jobs:
   aur:
     name: Publish to AUR
     runs-on: ubuntu-latest
-    if: inputs.aur && !contains(github.ref_name, '-')
+    # needs.release.result, not the implicit success(): build-native is skipped
+    # for non-cgo callers, and a skipped ancestor would skip this job too.
+    if: ${{ !cancelled() && needs.release.result == 'success' && inputs.aur && !contains(github.ref_name, '-') }}
     # Decoupled from the `release` job: a transient AUR/SSH failure used to
     # leave AUR stale because the steps lived in the release job, which is
     # one-shot and gates everything downstream. As its own job it can be re-run
@@ -975,7 +977,9 @@ jobs:
   homebrew:
     name: Publish to Homebrew tap
     runs-on: ubuntu-latest
-    if: inputs.homebrew && !contains(github.ref_name, '-')
+    # needs.release.result, not the implicit success(): build-native is skipped
+    # for non-cgo callers, and a skipped ancestor would skip this job too.
+    if: ${{ !cancelled() && needs.release.result == 'success' && inputs.homebrew && !contains(github.ref_name, '-') }}
     # Same reasoning as the aur job: decoupled from `release` so a tap push
     # that fails transiently can be re-run from the Actions UI without
     # re-cutting the GitHub release.
