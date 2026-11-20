@@ -67,12 +67,24 @@ on:
         description: >-
           Build each platform binary on a runner native to its GOOS/GOARCH
           instead of cross-compiling all of them on ubuntu-latest.
-          Cross-compiling forces CGO_ENABLED=0, so a cgo-only project (a
+          Cross-compiling forces CGO_ENABLED=0 (set it explicitly here), so a cgo-only project (a
           Fyne/OpenGL desktop app, say) can produce nothing but a headless
           linux/amd64 binary through the default path — and even that
           fails without X11/GL headers apt-packages installs. Off by
           default: the extra runners cost more, and a pure-Go project has
           no reason to pay for them.
+        required: false
+        type: boolean
+        default: false
+      cgo:
+        description: >-
+          Allow cgo. Default false: every binary is built with CGO_ENABLED=0
+          and a self-check fails the build if one is not static / not stamped
+          CGO_ENABLED=0. A native amd64 build on ubuntu-latest is NOT a cross
+          build, so without this it silently links glibc and will not run on
+          Alpine, distroless or NixOS. Only honoured with native-artifacts —
+          the cross-build path cannot do cgo — and only meaningful for a
+          cgo-only project (Fyne/OpenGL), which must also set this true.
         required: false
         type: boolean
         default: false
@@ -217,6 +229,14 @@ on:
         default: ''
 
     secrets:
+      RELEASE_SIGNING_KEY:
+        description: >-
+          Optional. Ed25519 private key as the raw 32-byte seed, base64
+          encoded (e.g. `head -c32 /dev/urandom | base64`). When present the
+          release job signs SHA256SUMS and publishes SHA256SUMS.sig (raw
+          64-byte signature, verifiable with `openssl pkeyutl -verify -rawin`
+          or Go's crypto/ed25519). Absent: the signing steps are skipped.
+        required: false
       AUR_SSH_PRIVATE_KEY:
         required: false
       HOMEBREW_TAP_SSH_KEY:
@@ -316,12 +336,26 @@ jobs:
         run: |
           VERSION="${GITHUB_REF#refs/tags/}"
           COMMIT="${GITHUB_SHA::8}"
-          DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          # Commit time, not wall-clock, so a rebuild of the tag stamps the
+          # same date. SOURCE_DATE_EPOCH is also read by nfpm.
+          SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          export SOURCE_DATE_EPOCH
+          DATE="$(TZ=UTC git log -1 --format=%cd --date=format-local:%Y-%m-%dT%H:%M:%SZ)"
           LDFLAGS="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${DATE}"
           if [ -n "$CHANNEL_VAR" ]; then
             LDFLAGS="${LDFLAGS} -X ${CHANNEL_VAR}=release"
           fi
           mkdir -p dist
+          # Release self-check: a binary that linked cgo is dynamically linked
+          # and will not run on musl/distroless hosts.
+          assert_static() {
+            go version -m "$1" | grep -q 'CGO_ENABLED=0' || {
+              echo "::error::$1 was not built with CGO_ENABLED=0"; go version -m "$1"; exit 1; }
+            if [ "$2" = "linux" ] && command -v file >/dev/null 2>&1; then
+              file "$1" | grep -q 'statically linked' || {
+                echo "::error::$1 is not statically linked"; file "$1"; exit 1; }
+            fi
+          }
 
           # Unquoted on purpose — PLATFORMS is a space-separated list.
           # shellcheck disable=SC2086
@@ -341,7 +375,8 @@ jobs:
             fi
 
             echo "Building ${GOOS}/${GOARCH}..."
-            GOOS=$GOOS GOARCH=$GOARCH go build -ldflags "$ldflags" -o "dist/${binary}" "$MAIN_PACKAGE"
+            CGO_ENABLED=0 GOOS=$GOOS GOARCH=$GOARCH go build -trimpath -ldflags "$ldflags" -o "dist/${binary}" "$MAIN_PACKAGE"
+            assert_static "dist/${binary}" "$GOOS"
 
             cd dist
             if [ "$GOOS" = "windows" ]; then
@@ -366,11 +401,25 @@ jobs:
         run: |
           VERSION="${GITHUB_REF#refs/tags/v}"
           COMMIT="${GITHUB_SHA::8}"
-          DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          # Commit time, not wall-clock, so a rebuild of the tag stamps the
+          # same date. SOURCE_DATE_EPOCH is also read by nfpm.
+          SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          export SOURCE_DATE_EPOCH
+          DATE="$(TZ=UTC git log -1 --format=%cd --date=format-local:%Y-%m-%dT%H:%M:%SZ)"
           LDFLAGS="-s -w -X main.version=v${VERSION} -X main.commit=${COMMIT} -X main.date=${DATE}"
           # Not guaranteed to exist: the Build binaries step that used to
           # create it is skipped under native-artifacts.
           mkdir -p dist
+          # Release self-check: a binary that linked cgo is dynamically linked
+          # and will not run on musl/distroless hosts.
+          assert_static() {
+            go version -m "$1" | grep -q 'CGO_ENABLED=0' || {
+              echo "::error::$1 was not built with CGO_ENABLED=0"; go version -m "$1"; exit 1; }
+            if [ "$2" = "linux" ] && command -v file >/dev/null 2>&1; then
+              file "$1" | grep -q 'statically linked' || {
+                echo "::error::$1 is not statically linked"; file "$1"; exit 1; }
+            fi
+          }
 
           go install "github.com/goreleaser/nfpm/v2/cmd/nfpm@${NFPM_VERSION}"
 
@@ -384,8 +433,9 @@ jobs:
                 if [ -n "$CHANNEL_VAR" ]; then
                   ldflags="${ldflags} -X ${CHANNEL_VAR}=${packager}"
                 fi
-                GOOS=linux GOARCH=$arch go build -ldflags "$ldflags" -o "dist/${NAME}" "$MAIN_PACKAGE"
+                CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -trimpath -ldflags "$ldflags" -o "dist/${NAME}" "$MAIN_PACKAGE"
               fi
+              assert_static "dist/${NAME}" linux
               GOARCH=$arch VERSION=$VERSION nfpm package --packager "$packager" --target dist/
             done
             rm "dist/${NAME}"
@@ -530,18 +580,34 @@ jobs:
           NFPM: ${{ inputs.nfpm }}
           NFPM_VERSION: ${{ inputs.nfpm-version }}
           CHANNEL_VAR: ${{ inputs.channel-var }}
+          CGO_ENABLED: ${{ inputs.cgo && '1' || '0' }}
         # windows-latest defaults to pwsh; this script is bash.
         shell: bash
         run: |
           VERSION="${GITHUB_REF#refs/tags/}"
           COMMIT="${GITHUB_SHA::8}"
-          DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          # Commit time, not wall-clock, so a rebuild of the tag stamps the
+          # same date. SOURCE_DATE_EPOCH is also read by nfpm.
+          SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          export SOURCE_DATE_EPOCH
+          DATE="$(TZ=UTC git log -1 --format=%cd --date=format-local:%Y-%m-%dT%H:%M:%SZ)"
           LDFLAGS="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${DATE}"
           ARCHIVE_LDFLAGS="$LDFLAGS"
           if [ -n "$CHANNEL_VAR" ]; then
             ARCHIVE_LDFLAGS="${ARCHIVE_LDFLAGS} -X ${CHANNEL_VAR}=release"
           fi
           mkdir -p dist
+          # Release self-check: a binary that linked cgo is dynamically linked
+          # and will not run on musl/distroless hosts.
+          assert_static() {
+            [ "$CGO_ENABLED" = "0" ] || return 0
+            go version -m "$1" | grep -q 'CGO_ENABLED=0' || {
+              echo "::error::$1 was not built with CGO_ENABLED=0"; go version -m "$1"; exit 1; }
+            if [ "$2" = "linux" ] && command -v file >/dev/null 2>&1; then
+              file "$1" | grep -q 'statically linked' || {
+                echo "::error::$1 is not statically linked"; file "$1"; exit 1; }
+            fi
+          }
 
           binary="$NAME"
           archive="${NAME}-${VERSION}-${GOOS}-${GOARCH}"
@@ -549,11 +615,13 @@ jobs:
             binary="${NAME}.exe"
             if [ "$WINDOWS_GUI" = "true" ]; then
               LDFLAGS="${LDFLAGS} -H=windowsgui"
+              ARCHIVE_LDFLAGS="${ARCHIVE_LDFLAGS} -H=windowsgui"
             fi
           fi
 
           echo "Building ${GOOS}/${GOARCH} natively..."
-          go build -ldflags "$ARCHIVE_LDFLAGS" -o "dist/${binary}" "$MAIN_PACKAGE"
+          go build -trimpath -ldflags "$ARCHIVE_LDFLAGS" -o "dist/${binary}" "$MAIN_PACKAGE"
+          assert_static "dist/${binary}" "$GOOS"
 
           # nfpm packages here, from the natively built binary, because the
           # build job's cross-compiling loop can never produce a cgo one.
@@ -564,12 +632,13 @@ jobs:
               # own build to say `deb` or `rpm`; without a channel var the
               # archive binary is packaged as it always was.
               if [ -n "$CHANNEL_VAR" ]; then
-                go build -ldflags "${LDFLAGS} -X ${CHANNEL_VAR}=${packager}" -o "dist/${binary}" "$MAIN_PACKAGE"
+                go build -trimpath -ldflags "${LDFLAGS} -X ${CHANNEL_VAR}=${packager}" -o "dist/${binary}" "$MAIN_PACKAGE"
+                assert_static "dist/${binary}" "$GOOS"
               fi
               GOARCH=$GOARCH VERSION="${VERSION#v}" nfpm package --packager "$packager" --target dist/
             done
             if [ -n "$CHANNEL_VAR" ]; then
-              go build -ldflags "$ARCHIVE_LDFLAGS" -o "dist/${binary}" "$MAIN_PACKAGE"
+              go build -trimpath -ldflags "$ARCHIVE_LDFLAGS" -o "dist/${binary}" "$MAIN_PACKAGE"
             fi
           fi
 
@@ -658,6 +727,40 @@ jobs:
           cat SHA256SUMS
           # Self-check: every line must verify cleanly before users get it.
           sha256sum --check --strict SHA256SUMS
+
+      - name: Check for a release signing key
+        # `secrets` is not usable in a step `if:`, so presence is detected
+        # here and the key itself is exposed only to the signing step.
+        id: sigkey
+        if: inputs.artifacts
+        env:
+          KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          if [ -n "$KEY" ]; then echo "present=true" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Sign SHA256SUMS (Ed25519)
+        # INERT until the RELEASE_SIGNING_KEY secret exists. Expected value:
+        # the raw 32-byte Ed25519 seed, base64 encoded. Output is
+        # SHA256SUMS.sig, the raw 64-byte signature, added to dist/ before the
+        # provenance attestation so it is covered by it too.
+        if: inputs.artifacts && steps.sigkey.outputs.present == 'true'
+        env:
+          KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          work="$(mktemp -d)"
+          trap 'rm -rf "$work"' EXIT
+          seed="$(printf '%s' "$KEY" | base64 -d | wc -c)"
+          [ "$seed" -eq 32 ] || { echo "::error::RELEASE_SIGNING_KEY must be a base64 32-byte Ed25519 seed"; exit 1; }
+          # PKCS#8 wrapper for an Ed25519 seed, then sign the file as-is.
+          { printf '\x30\x2e\x02\x01\x00\x30\x05\x06\x03\x2b\x65\x70\x04\x22\x04\x20'
+            printf '%s' "$KEY" | base64 -d; } > "$work/key.der"
+          openssl pkey -inform DER -in "$work/key.der" -out "$work/key.pem"
+          openssl pkeyutl -sign -rawin -inkey "$work/key.pem" -in dist/SHA256SUMS -out dist/SHA256SUMS.sig
+          openssl pkey -in "$work/key.pem" -pubout -out "$work/pub.pem"
+          openssl pkeyutl -verify -rawin -pubin -inkey "$work/pub.pem" -in dist/SHA256SUMS -sigfile dist/SHA256SUMS.sig
+          echo "Signed SHA256SUMS; public key (raw, base64):"
+          openssl pkey -pubin -in "$work/pub.pem" -outform DER | tail -c 32 | base64
 
       - name: Attest build provenance for the release artifacts
         if: inputs.artifacts
@@ -805,11 +908,13 @@ jobs:
           echo "::endgroup::"
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v3.0.3
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           # Empty for a library: dist/ does not exist, and a glob matching
           # nothing would fail the upload rather than skip it.
           files: ${{ inputs.artifacts && 'dist/*' || '' }}
+          # A tag with a hyphen (v1.2.3-rc1) is a pre-release: never `latest`.
+          prerelease: ${{ contains(github.ref_name, '-') }}
           generate_release_notes: true
           discussion_category_name: ${{ inputs.discussion-category }}
           body_path: RELEASE_BODY.md
@@ -817,7 +922,7 @@ jobs:
   aur:
     name: Publish to AUR
     runs-on: ubuntu-latest
-    if: inputs.aur
+    if: inputs.aur && !contains(github.ref_name, '-')
     # Decoupled from the `release` job: a transient AUR/SSH failure used to
     # leave AUR stale because the steps lived in the release job, which is
     # one-shot and gates everything downstream. As its own job it can be re-run
@@ -838,7 +943,7 @@ jobs:
       # real failure; the job can still be re-run from the Actions UI.
       - name: Publish to AUR (attempt 1)
         id: aur1
-        uses: KSXGitHub/github-actions-deploy-aur@v4.2.0
+        uses: KSXGitHub/github-actions-deploy-aur@084b0d9b15415bf9cdb65d44dad1efe37a354050 # v4.2.0
         continue-on-error: true
         with:
           pkgname: ${{ inputs.aur-pkgname || inputs.binary-name }}
@@ -857,7 +962,7 @@ jobs:
 
       - name: Publish to AUR (attempt 2)
         if: steps.aur1.outcome == 'failure'
-        uses: KSXGitHub/github-actions-deploy-aur@v4.2.0
+        uses: KSXGitHub/github-actions-deploy-aur@084b0d9b15415bf9cdb65d44dad1efe37a354050 # v4.2.0
         with:
           pkgname: ${{ inputs.aur-pkgname || inputs.binary-name }}
           pkgbuild: ./packaging/aur/PKGBUILD
@@ -870,7 +975,7 @@ jobs:
   homebrew:
     name: Publish to Homebrew tap
     runs-on: ubuntu-latest
-    if: inputs.homebrew
+    if: inputs.homebrew && !contains(github.ref_name, '-')
     # Same reasoning as the aur job: decoupled from `release` so a tap push
     # that fails transiently can be re-run from the Actions UI without
     # re-cutting the GitHub release.
