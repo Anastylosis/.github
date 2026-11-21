@@ -435,8 +435,10 @@ jobs:
             echo "::group::fuzz $target ($pkg)"
             # `-fuzz` with no match only warns ("no fuzz tests to fuzz") and
             # exits 0, so a renamed target would pass green. Assert it exists,
-            # and anchor the pattern so it cannot match a longer name.
-            if ! go test "$pkg" -run '^$' -list "^${target}\$" | grep -qx "$target"; then
+            # and anchor the pattern so it cannot match a longer name. No -q:
+            # grep would exit on the first match and the SIGPIPE it leaves
+            # `go test` fails the pipeline under pipefail.
+            if ! go test "$pkg" -run '^$' -list "^${target}\$" | grep -x "$target" >/dev/null; then
               echo "::error::fuzz target $target not found in $pkg"
               exit 1
             fi
