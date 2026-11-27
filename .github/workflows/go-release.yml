@@ -268,7 +268,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends $APT_PACKAGES
 
       - name: Set up Go
-        uses: actions/setup-go@v7.0.0
+        uses: actions/setup-go@v7.1.0
         with:
           go-version-file: go.mod
           # Replaced below: setup-go's cache has no fallback key.
@@ -539,7 +539,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends $APT_PACKAGES
 
       - name: Set up Go
-        uses: actions/setup-go@v7.0.0
+        uses: actions/setup-go@v7.1.0
         with:
           go-version-file: go.mod
           # Replaced below: setup-go's cache has no fallback key.

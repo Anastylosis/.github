@@ -46,7 +46,7 @@ jobs:
 
       - name: Dependency review
         if: ${{ !github.event.repository.private }}
-        uses: actions/dependency-review-action@v5.0.0
+        uses: actions/dependency-review-action@v5.0.1
         with:
           fail-on-severity: ${{ inputs.fail-on-severity }}
           comment-summary-in-pr: on-failure
