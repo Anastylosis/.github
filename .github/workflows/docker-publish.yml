@@ -38,8 +38,9 @@ on:
         default: './Dockerfile'
       go-version-build-arg:
         description: >-
-          Mirror go.mod's `go` directive into the build as GO_VERSION, so the
-          builder image always matches the toolchain go.mod declares. Read
+          Mirror the Go go.mod builds with (its `toolchain` line, else its `go`
+          line) into the build as GO_VERSION, so the builder image always
+          matches it. Read
           inline rather than via each repo's scripts/go-version.sh — that
           script stays for local use, but the pipeline no longer depends on
           every repo shipping an identical copy of it. Turn off for non-Go
@@ -164,12 +165,14 @@ jobs:
 
           args=""
           if [ "$WANT_GO_ARG" = "true" ]; then
-            # go.mod's `go` directive looks like `go 1.26.5`. Same awk as each
-            # repo's scripts/go-version.sh, inlined so this workflow does not
-            # require that script to exist.
-            go_version=$(awk '/^go [0-9]+\.[0-9]+(\.[0-9]+)?$/ { print $2; exit }' "$GO_MOD_PATH")
+            # The Go the module builds with: its `toolchain goX.Y.Z` line if it
+            # has one, else its `go X.Y.Z` line. Same awk as each repo's
+            # scripts/go-version.sh, inlined so this workflow does not require
+            # that script to exist.
+            go_version=$(awk '/^toolchain go[0-9]+\.[0-9]+(\.[0-9]+)?$/ { sub(/^go/, "", $2); print $2; exit }' "$GO_MOD_PATH")
+            [ -n "$go_version" ] || go_version=$(awk '/^go [0-9]+\.[0-9]+(\.[0-9]+)?$/ { print $2; exit }' "$GO_MOD_PATH")
             if [ -z "$go_version" ]; then
-              echo "::error::could not find a 'go X.Y[.Z]' directive in $GO_MOD_PATH"
+              echo "::error::could not find a 'toolchain goX.Y[.Z]' or 'go X.Y[.Z]' directive in $GO_MOD_PATH"
               exit 1
             fi
             args="${args}GO_VERSION=${go_version}"$'\n'

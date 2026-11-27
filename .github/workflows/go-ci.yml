@@ -148,12 +148,30 @@ on:
         default: false
       check-dockerfile-go-version:
         description: >-
-          Verify the Dockerfile's `ARG GO_VERSION` default matches go.mod. CI
-          passes GO_VERSION dynamically; the ARG default is the fallback for a
-          naive local `docker build .`, and the two drift silently.
+          Verify the Dockerfile's `ARG GO_VERSION` default matches the Go
+          go.mod builds with: its `toolchain` line if it has one, else its `go`
+          line. CI passes GO_VERSION dynamically; the ARG default is the
+          fallback for a naive local `docker build .`, and the two drift
+          silently.
         required: false
         type: boolean
         default: false
+      min-go:
+        description: >-
+          Also build and vet everything, and test `min-go-test-packages`, with
+          the Go version go.mod's `go` line names and GOTOOLCHAIN=local. For a
+          module whose `toolchain` line is newer than its `go` line: setup-go
+          builds every other job with the toolchain, and nothing else would
+          notice code that calls a standard-library API newer than the minimum
+          it promises importers.
+        required: false
+        type: boolean
+        default: false
+      min-go-test-packages:
+        description: 'Packages the min-go job tests. Usually the public ones; empty skips the tests.'
+        required: false
+        type: string
+        default: './...'
       cross-build-targets:
         description: >-
           JSON array of {goos, goarch} to cross-compile. linux/amd64 is
@@ -702,11 +720,14 @@ jobs:
         # scripts/go-version.sh, so this job does not require every repo to
         # ship an identical copy of that script.
         run: |
-          gomod_ver=$(awk '/^go [0-9]+\.[0-9]+(\.[0-9]+)?$/ { print $2; exit }' go.mod)
+          # The toolchain line, when present, is what the module builds with;
+          # the go line is only the minimum it promises importers.
+          gomod_ver=$(awk '/^toolchain go[0-9]+\.[0-9]+(\.[0-9]+)?$/ { sub(/^go/, "", $2); print $2; exit }' go.mod)
+          [ -n "$gomod_ver" ] || gomod_ver=$(awk '/^go [0-9]+\.[0-9]+(\.[0-9]+)?$/ { print $2; exit }' go.mod)
           dockerfile_ver=$(awk -F= '/^ARG GO_VERSION=/ { print $2; exit }' Dockerfile)
           if [ "$gomod_ver" != "$dockerfile_ver" ]; then
-            echo "::error::go.mod says Go $gomod_ver but Dockerfile default ARG GO_VERSION=$dockerfile_ver."
-            echo "::error::Edit Dockerfile so the ARG GO_VERSION default matches go.mod."
+            echo "::error::go.mod builds with Go $gomod_ver but Dockerfile default ARG GO_VERSION=$dockerfile_ver."
+            echo "::error::Edit Dockerfile so the ARG GO_VERSION default matches go.mod's toolchain (or go) line."
             exit 1
           fi
           echo "OK: Dockerfile GO_VERSION=$dockerfile_ver matches go.mod"
@@ -717,6 +738,43 @@ jobs:
   # require bumping go.mod on every new Go point release to keep the pipeline
   # green. We prefer to see findings as warnings and decide deliberately when
   # to upgrade — see each repo's CONTRIBUTING.md → "CI security checks".
+  min-go:
+    name: Minimum Go (go.mod go line)
+    if: inputs.min-go
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - name: Read the go line
+        id: min
+        run: |
+          v=$(awk '/^go [0-9]+\.[0-9]+(\.[0-9]+)?$/ { print $2; exit }' go.mod)
+          if [ -z "$v" ]; then
+            echo "::error::could not find a 'go X.Y[.Z]' directive in go.mod"
+            exit 1
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Go ${{ steps.min.outputs.version }}
+        uses: actions/setup-go@v7.0.0
+        with:
+          go-version: ${{ steps.min.outputs.version }}
+
+      # GOTOOLCHAIN=local keeps the go command from switching to the toolchain
+      # line, which would make this job test nothing.
+      - name: Build, vet and test
+        env:
+          GOTOOLCHAIN: local
+          PACKAGES: ${{ inputs.min-go-test-packages }}
+        run: |
+          go version
+          go build ./...
+          go vet ./...
+          if [ -n "$PACKAGES" ]; then
+            # shellcheck disable=SC2086 # a space-separated package list
+            go test -count=1 $PACKAGES
+          fi
+
   vulncheck:
     name: Vulncheck (informational)
     runs-on: ubuntu-latest
